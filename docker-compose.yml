@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    container_name: posting_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env          # чтобы бот мог писать в .env (tzset, settime и т.д.)
+      - ./messages.db:/app/messages.db
+      - ./statistics.db:/app/statistics.db
+      - ./session.session:/app/session.session
+      - ./stats_session.session:/app/stats_session.session
+      - ./admin_resolver.session:/app/admin_resolver.session
