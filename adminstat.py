@@ -271,14 +271,15 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
     fig, ax = plt.subplots(figsize=(9, 2.2 + 0.55 * len(top)))
     ax.axis('off')
 
-    title = "🏆 Топ админов по качеству"
+    title = "Топ админов по качеству"
     if days:
         title += f" — последние {days} дн."
     fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
 
-    cols = ["Админ", "Посты", "В очереди", "Просмотры", "Реакции", "Quality"]
+    cols = ["#", "Админ", "Посты", "В очереди", "Просмотры", "Реакции", "Quality"]
     rows = [
         [
+            str(i + 1),
             f"@{a['username']}",
             str(a['postcount']),
             str(a['queuedcount']),
@@ -286,14 +287,10 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
             str(a['reactionstotal']),
             f"{a['reaction_rate']:.2f}",
         ]
-        for a in top
+        for i, a in enumerate(top)
     ]
 
-    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-    for i, row in enumerate(rows):
-        row[0] = f"{medals[i]} {row[0]}"
-
-    col_widths = [0.22, 0.10, 0.13, 0.15, 0.15, 0.13]
+    col_widths = [0.05, 0.22, 0.10, 0.13, 0.15, 0.15, 0.13]
     table = ax.table(
         cellText=rows,
         colLabels=cols,

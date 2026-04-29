@@ -465,7 +465,7 @@ async def best_command(message: types.Message):
     try:
         stat = load_stat(days=days)
         buf = render_best_admins_image(stat, days=days)
-        caption = "🏆 Топ-5 админов по качеству"
+        caption = "Топ-5 админов по качеству"
         if days:
             caption += f" за последние {days} дн."
         await message.answer_photo(types.BufferedInputFile(buf.read(), filename="best.png"), caption=caption)
