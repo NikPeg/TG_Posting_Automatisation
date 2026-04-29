@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 import msgs
 import timezone
 import runtime
+
+WEEKDAY_EN = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 from adminstat import (
     get_admin_ids,
     get_admin_uns,
@@ -229,6 +231,8 @@ async def post_random():
                     username = parts[-1]
                     bots[username] = token
 
+    today_weekday = WEEKDAY_EN[timezone.tz_now().weekday()]
+
     shuffled_admins = admins[:]
     random.shuffle(shuffled_admins)
 
@@ -237,6 +241,16 @@ async def post_random():
         if not msg_from_adm:
             logger.warning(f"У админа {rand_adm} нет заготовленных постов, пропускаем")
             continue
+
+        # Фильтруем по дню недели: берём посты без ограничения ИЛИ с нужным днём
+        msg_for_today = [
+            msg for msg in msg_from_adm
+            if msg.get('weekday') is None or msg.get('weekday') == today_weekday
+        ]
+        if not msg_for_today:
+            logger.info(f"У админа {rand_adm} нет постов для публикации сегодня ({today_weekday}), пропускаем")
+            continue
+        msg_from_adm = msg_for_today
 
         if rand_adm in bots:
             logger.info(f"Выбран админ для постинга: {rand_adm}. Используем именного бота")

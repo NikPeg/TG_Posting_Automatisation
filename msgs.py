@@ -43,6 +43,10 @@ def init_messages_db():
         cursor.execute('ALTER TABLE messages ADD COLUMN user_id INTEGER DEFAULT NULL')
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute('ALTER TABLE messages ADD COLUMN weekday TEXT DEFAULT NULL')
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -98,20 +102,20 @@ def load_messages():
     init_messages_db()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
-    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at FROM messages WHERE posted = FALSE')
+    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday FROM messages WHERE posted = FALSE')
     rows = cursor.fetchall()
     conn.close()
-    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10]} for row in rows]
+    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11]} for row in rows]
 
 
 def load_all_messages():
     init_messages_db()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
-    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at FROM messages')
+    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday FROM messages')
     rows = cursor.fetchall()
     conn.close()
-    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10]} for row in rows]
+    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11]} for row in rows]
 
 
 def save_messages(messages):
@@ -156,8 +160,31 @@ def clear_posted_messages():
     logger.info("Опубликованные сообщения удалены из базы данных")
 
 
+WEEKDAY_NAMES_RU = {
+    'monday': 'понедельник',
+    'tuesday': 'вторник',
+    'wednesday': 'среда',
+    'thursday': 'четверг',
+    'friday': 'пятница',
+    'saturday': 'суббота',
+    'sunday': 'воскресенье',
+}
+
+WEEKDAY_NAMES_RU_ACCUSATIVE = {
+    'monday': 'понедельник',
+    'tuesday': 'вторник',
+    'wednesday': 'среду',
+    'thursday': 'четверг',
+    'friday': 'пятницу',
+    'saturday': 'субботу',
+    'sunday': 'воскресенье',
+}
+
+
 def save_message_to_db(message: types.Message):
     init_messages_db()
+
+    weekday = adminstat.get_weekday_mode(message.from_user.id)
 
     media_group_mode = adminstat.get_media_group_mode(message.from_user.id)
     if hasattr(message, 'media_group_id') and media_group_mode:
@@ -168,8 +195,8 @@ def save_message_to_db(message: types.Message):
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
     is_forwarded_from_channel = message.forward_origin is not None and hasattr(message.forward_origin, 'chat') and message.forward_origin.chat.type in ['channel']
-    cursor.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?)',
-                   (message.message_id, message.chat.id, message.from_user.username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id))
+    cursor.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?)',
+                   (message.message_id, message.chat.id, message.from_user.username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday))
     conn.commit()
     conn.close()
 
@@ -184,9 +211,10 @@ def save_message_to_db(message: types.Message):
         'user_id': message.from_user.id,
         'posted': False,
         'is_forwarded_from_channel': is_forwarded_from_channel,
-        'views': 0, 
+        'views': 0,
         'reactions': 0,
-        'media_group': media_group_id
+        'media_group': media_group_id,
+        'weekday': weekday,
     }
 
 

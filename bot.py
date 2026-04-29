@@ -135,8 +135,13 @@ async def normalize_bot_mappings():
 @admin_required
 async def handle_source_message(message: types.Message):
     message_data = msgs.save_message_to_db(message)
-    await message.answer(f"Сообщение сохранено в базе данных: ID {message_data['message_id']} от {message_data['username']}")
-    logger.info(f"Сообщение сохранено в базе данных: ID {message_data['message_id']} от {message_data['username']}")
+    weekday = message_data.get('weekday')
+    weekday_note = ""
+    if weekday:
+        day_ru = msgs.WEEKDAY_NAMES_RU_ACCUSATIVE.get(weekday, weekday)
+        weekday_note = f" на {day_ru}"
+    await message.answer(f"Сообщение сохранено в базе данных: ID {message_data['message_id']} от {message_data['username']}{weekday_note}")
+    logger.info(f"Сообщение сохранено в базе данных: ID {message_data['message_id']} от {message_data['username']}{weekday_note}")
     from posting import new_message_event
     new_message_event.set()
 
@@ -160,7 +165,10 @@ async def help_command(message: types.Message):
         "/best — топ-5 админов по отклику (картинка)\n"
         "/best <b>&lt;N&gt;</b> — топ-5 за последние N дней\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
-        "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n",
+        "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n"
+        "/weekday — показать текущий день публикации\n"
+        "/weekday <b>&lt;день&gt;</b> — публиковать только в этот день (monday…sunday)\n"
+        "/weekday off — публиковать в любой день\n",
         parse_mode="HTML"
     )
 
@@ -726,6 +734,58 @@ async def delete_bot(message: types.Message):
 
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
+
+
+VALID_WEEKDAYS = list(msgs.WEEKDAY_NAMES_RU.keys())
+
+
+@dp.message(Command("weekday"))
+@admin_required
+async def weekday_command(message: types.Message):
+    args = message.text.split()
+    username = message.from_user.username
+
+    if len(args) == 1:
+        from adminstat import get_weekday_mode
+        current = get_weekday_mode(message.from_user.id)
+        if current:
+            day_ru = msgs.WEEKDAY_NAMES_RU.get(current, current)
+            await message.answer(f"Твои новые посты выкладываются только в {day_ru}.\nЧтобы отключить: /weekday off")
+        else:
+            await message.answer("День недели не установлен — посты выкладываются в любой день.\nПример: /weekday sunday")
+        return
+
+    if len(args) != 2:
+        await message.answer(
+            "Используйте:\n"
+            "/weekday — показать текущий режим\n"
+            "/weekday <день> — публиковать новые посты только в этот день\n"
+            "/weekday off — публиковать в любой день\n\n"
+            "Дни: monday, tuesday, wednesday, thursday, friday, saturday, sunday"
+        )
+        return
+
+    arg = args[1].lower()
+
+    if arg == 'off':
+        from adminstat import set_weekday_mode
+        set_weekday_mode(message.from_user.id, None)
+        await message.answer(f"@{username}: новые посты будут выкладываться в любой день")
+        return
+
+    if arg not in VALID_WEEKDAYS:
+        await message.answer(
+            "Неверный день недели. Используйте:\n"
+            "monday, tuesday, wednesday, thursday, friday, saturday, sunday"
+        )
+        return
+
+    from adminstat import set_weekday_mode
+    set_weekday_mode(message.from_user.id, arg)
+    day_ru = msgs.WEEKDAY_NAMES_RU.get(arg, arg)
+    await message.answer(
+        f"@{username}: новые посты будут выкладываться только в {day_ru}."
+    )
 
 
 @dp.message(Command("group"))

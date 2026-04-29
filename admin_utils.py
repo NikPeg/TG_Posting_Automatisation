@@ -10,7 +10,7 @@ def _make_client():
     api_hash = os.getenv('CORE_API_HASH')
     if not api_id or not api_hash:
         raise RuntimeError("CORE_API_ID or CORE_API_HASH not set in .env")
-    return TelegramClient('admin_resolver', int(api_id), api_hash)
+    return TelegramClient('session', int(api_id), api_hash)
 
 
 async def resolve_usernames_to_ids(usernames):

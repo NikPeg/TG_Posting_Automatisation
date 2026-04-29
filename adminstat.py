@@ -31,9 +31,14 @@ def init_admin_settings():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS admin_settings (
             username TEXT PRIMARY KEY,
-            media_group_mode BOOLEAN DEFAULT 1
+            media_group_mode BOOLEAN DEFAULT 1,
+            weekday TEXT DEFAULT NULL
         )
     ''')
+    try:
+        cursor.execute('ALTER TABLE admin_settings ADD COLUMN weekday TEXT DEFAULT NULL')
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -45,6 +50,29 @@ def set_media_group_mode(admin, mode: bool):
     cursor.execute('INSERT OR REPLACE INTO admin_settings (username, media_group_mode) VALUES (?, ?)', (admin, int(mode)))
     conn.commit()
     conn.close()
+
+
+def set_weekday_mode(admin, weekday: str | None):
+    init_admin_settings()
+    conn = sqlite3.connect(STATISTICS_DB)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO admin_settings (username, weekday) VALUES (?, ?) '
+        'ON CONFLICT(username) DO UPDATE SET weekday = excluded.weekday',
+        (admin, weekday)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_weekday_mode(admin) -> str | None:
+    init_admin_settings()
+    conn = sqlite3.connect(STATISTICS_DB)
+    cursor = conn.cursor()
+    cursor.execute('SELECT weekday FROM admin_settings WHERE username = ?', (admin,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
 
 
 def get_media_group_mode(admin) -> bool:
