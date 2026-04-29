@@ -91,15 +91,20 @@ def export_admin_stat_csv(stat):
             "posts",
             "queued",
             "views",
-            "reactions"
+            "reactions",
+            "reactions/100views"
         ])
         for adm in stat:
+            views = adm["viewstotal"]
+            reactions = adm["reactionstotal"]
+            rate = round(reactions / views * 100, 2) if views > 0 else 0
             writer.writerow([
                 adm["username"],
                 adm["postcount"],
                 adm["queuedcount"],
-                adm["viewstotal"],
-                adm["reactionstotal"]
+                views,
+                reactions,
+                rate
             ])
     return filename
 

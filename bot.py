@@ -144,9 +144,8 @@ async def help_command(message: types.Message):
     await message.answer(
         "Команды для администраторов:\n\n"
         "/help — список команд\n"
-        "/stat — статистика по админам за всё время\n"
-        "<b>/stat &lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
-        "/config — текущие настройки\n"
+        "/stat — статистика по всем админам за всё время\n"
+        "/stat <b>&lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
         "/messages — сохранённые сообщения\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
         "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n",
@@ -349,7 +348,7 @@ async def stat_command(message: types.Message):
 
 
 @dp.message(Command("config"))
-@admin_required
+@general_admin_required
 async def config_command(message: types.Message):
     logger.info(f"Команда /config использована пользователем @{message.from_user.username}")
     import config

@@ -106,7 +106,8 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
             else:
                 other_bot_token = bots[msg.get('user_id')]
                 namebot_api_url = f"https://api.telegram.org/bot{other_bot_token}"
-                genbot_api_url = f"https://api.telegram.org/bot{os.getenv("BOT_TOKEN")}"
+                named_bot_ok = False
+                named_bot_fail_reason = None
                 try:
                     if msg.get('is_forwarded_from_channel', True):
                         method = "forwardMessages"
@@ -127,39 +128,60 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 
                             if not data.get("ok", False):
                                 description = data.get("description", "")
-                                reason = _classify_error_str(description)
-                                logger.error(f"Ошибка при отправке другим ботом сообщения {target_message_id}: {reason}")
+                                named_bot_fail_reason = _classify_error_str(description)
                                 if "message" in description.lower():
                                     msgs.clear_message(target_message_id, msg.get('user_id'))
-                                return False, reason
+                            else:
+                                forwarded_msg = data["result"]
+                                named_bot_ok = True
 
-                            forwarded_msg = data["result"]
-                        
-                        async with session.post(
-                            f"{genbot_api_url}/sendMessage",
-                            json={
-                                "chat_id": msg['chat_id'],
-                                "text": f"Сообщение {msg['message_id']}{mgid} переслано в канал"
-                            }
-                        ) as response:
-                            data = await response.json()
-                            if not data.get("ok", False):
-                                logger.error(f"Ошибка Telegram API при отправке другим ботом: {data}")
-                                return False
+                        if named_bot_ok:
+                            genbot_api_url = f"https://api.telegram.org/bot{os.getenv('BOT_TOKEN')}"
+                            async with session.post(
+                                f"{genbot_api_url}/sendMessage",
+                                json={
+                                    "chat_id": msg['chat_id'],
+                                    "text": f"Сообщение {msg['message_id']}{mgid} переслано в канал"
+                                }
+                            ) as response:
+                                data = await response.json()
+                                if not data.get("ok", False):
+                                    logger.error(f"Ошибка при отправке уведомления: {data}")
 
-                    
-                    logger.info(f"Сообщение {target_message_id}{mgid} отправлено ботом @{msg['username']}")
-                    for msgts, fmsg in zip(msg_to_send, forwarded_msg):
-                        msgs.update_message_posted(
-                            msgts,
-                            msg['chat_id'],
-                            fmsg['message_id']
-                        )
-                    return True, None
+                            logger.info(f"Сообщение {target_message_id}{mgid} отправлено ботом @{msg['username']}")
+                            for msgts, fmsg in zip(msg_to_send, forwarded_msg):
+                                msgs.update_message_posted(msgts, msg['chat_id'], fmsg['message_id'])
+                            return True, None
 
                 except Exception as e:
+                    named_bot_fail_reason = _classify_error(e)
+
+                logger.warning(
+                    f"Именной бот @{msg['username']} недоступен ({named_bot_fail_reason}). "
+                    f"Публикуем через основного бота. Добавьте именного бота командой /addbot"
+                )
+                try:
+                    from bot import bot
+                    if msg.get('is_forwarded_from_channel', True):
+                        forwarded_msg = await bot.forward_messages(
+                            chat_id=target_chat_id,
+                            from_chat_id=msg['chat_id'],
+                            message_ids=msg_to_send
+                        )
+                    else:
+                        forwarded_msg = await bot.copy_messages(
+                            chat_id=target_chat_id,
+                            from_chat_id=msg['chat_id'],
+                            message_ids=msg_to_send
+                        )
+                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал (через основного бота)")
+                    logger.info(f"Сообщение {target_message_id}{mgid} переслано через основного бота")
+                    for msgts, fmsg in zip(msg_to_send, forwarded_msg):
+                        msgs.update_message_posted(msgts, msg['chat_id'], fmsg.message_id)
+                    return True, None
+                except Exception as e:
                     reason = _classify_error(e)
-                    logger.error(f"Ошибка при отправке другим ботом сообщения {target_message_id}: {reason}")
+                    logger.error(f"Fallback через основного бота тоже не удался для сообщения {target_message_id}: {reason}")
                     return False, reason
 
     logger.warning(f"Сообщение {target_message_id} не найдено в базе")
