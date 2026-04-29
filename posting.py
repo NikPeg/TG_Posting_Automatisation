@@ -185,15 +185,20 @@ async def post_random():
                     username = parts[-1]
                     bots[username] = token
 
-    rand_adm = random.choice(admins)
+    shuffled_admins = admins[:]
+    random.shuffle(shuffled_admins)
 
-    if rand_adm in bots:
-        logger.info(f"Выбран админ для постинга: {rand_adm}. Используем именного бота")
-    else:
-        logger.info(f"Выбран админ для постинга: {rand_adm}. Используем основного бота")
+    for rand_adm in shuffled_admins:
+        msg_from_adm = [msg for msg in messages if msg.get('user_id') == rand_adm]
+        if not msg_from_adm:
+            logger.warning(f"У админа {rand_adm} нет заготовленных постов, пропускаем")
+            continue
 
-    msg_from_adm = [msg for msg in messages if msg.get('user_id') == rand_adm]
-    try:
+        if rand_adm in bots:
+            logger.info(f"Выбран админ для постинга: {rand_adm}. Используем именного бота")
+        else:
+            logger.info(f"Выбран админ для постинга: {rand_adm}. Используем основного бота")
+
         msg = random.choice(msg_from_adm)
         success = await post(msg['message_id'])
         if success:
@@ -201,10 +206,9 @@ async def post_random():
             decrement_queued_to_count(rand_adm)
         else:
             logger.error(f"Не удалось опубликовать пост {msg['message_id']}")
-            return success
-    except:
-        logger.warning("У выбранного админа нет заготовленных постов")
-        await post_random()
+        return success
+
+    logger.warning("Ни у одного админа нет заготовленных постов")
 
 
 async def periodic_post():
