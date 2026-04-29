@@ -12,3 +12,4 @@ services:
       - ./session.session:/app/session.session
       - ./stats_session.session:/app/stats_session.session
       - ./admin_resolver.session:/app/admin_resolver.session
+      - ./runtime_data.json:/app/runtime_data.json

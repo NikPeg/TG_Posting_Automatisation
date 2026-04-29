@@ -275,7 +275,7 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
     fig, ax = plt.subplots(figsize=(9, 2.2 + 0.55 * len(top)))
     ax.axis('off')
 
-    title = "Топ админов по качеству"
+    title = "Топ админов по отклику"
     if days:
         title += f" — последние {days} дн."
     fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)

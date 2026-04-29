@@ -11,4 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Предсоздаём файлы, которые монтируются с хоста,
+# чтобы docker не создавал вместо них папки
+RUN touch runtime_data.json messages.db statistics.db
+
 CMD ["python", "bot.py"]

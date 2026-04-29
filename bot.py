@@ -157,7 +157,7 @@ async def help_command(message: types.Message):
         "/stat <b>&lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
         "/posts — топ-10 постов по просмотрам за всё время\n"
         "/posts <b>&lt;N&gt;</b> — топ-10 постов за последние N дней\n"
-        "/best — топ-5 админов по качеству (картинка)\n"
+        "/best — топ-5 админов по отклику (картинка)\n"
         "/best <b>&lt;N&gt;</b> — топ-5 за последние N дней\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
         "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n",
@@ -509,7 +509,7 @@ async def best_command(message: types.Message):
     try:
         stat = load_stat(days=days)
         buf = render_best_admins_image(stat, days=days)
-        caption = "Топ-5 админов по качеству"
+        caption = "Топ-5 админов по отклику"
         if days:
             caption += f" за последние {days} дн."
         await message.answer_photo(types.BufferedInputFile(buf.read(), filename="best.png"), caption=caption)
