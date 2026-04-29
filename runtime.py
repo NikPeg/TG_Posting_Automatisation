@@ -30,13 +30,24 @@ def get_last_post_time() -> datetime:
     if raw:
         dt = datetime.fromisoformat(raw)
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    # Фоллбэк: читаем из .env для обратной совместимости
+    # Фоллбэк: читаем из .env для обратной совместимости.
+    # Значения в .env хранились через tz_now() — UTC+offset с tzinfo=UTC,
+    # поэтому вычитаем offset чтобы получить чистый UTC.
     from dotenv import load_dotenv
+    import os as _os
     load_dotenv(override=True)
-    env_val = os.getenv("LAST_TIME_POST")
+    env_val = _os.getenv("LAST_TIME_POST")
     if env_val:
+        from datetime import timedelta
+        try:
+            import config as _cfg
+            offset = _cfg.TIMEZONE_OFFSET
+        except Exception:
+            offset = 0
         dt = datetime.fromisoformat(env_val)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt - timedelta(hours=offset)
     return _EPOCH
 
 
