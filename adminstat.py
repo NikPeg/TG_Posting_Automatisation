@@ -93,7 +93,7 @@ def export_admin_stat_csv(stat):
             "queued",
             "views",
             "reactions",
-            "quality"
+            "отклик"
         ])
         for adm in stat:
             views = adm["viewstotal"]
@@ -120,7 +120,7 @@ def load_stat(days: int | None = None):
         cursor.execute('SELECT username, postcount, queuedcount, viewstotal, reactionstotal FROM statistics')
         rows = cursor.fetchall()
         conn.close()
-        return [{'username': row[0], 'postcount': row[1], 'queuedcount': row[2], 'viewstotal': row[3], 'reactionstotal': row[4], 'reaction_rate': round((row[4] / row[3] * 100), 2) if row[3] > 0 else 0} for row in rows]
+        return [{'username': row[0], 'postcount': row[1], 'queuedcount': row[2], 'viewstotal': row[3], 'reactionstotal': row[4], 'engagement': round((row[4] / row[3] * 100), 2) if row[3] > 0 else 0} for row in rows]
 
     if days <= 0:
         days = 1
@@ -179,7 +179,7 @@ def load_stat(days: int | None = None):
             'queuedcount': queuedcount,
             'viewstotal': viewstotal,
             'reactionstotal': reactionstotal,
-            'reaction_rate': rate,
+            'engagement': rate,
         })
 
     msg_conn.close()
@@ -201,7 +201,7 @@ def load_top_posts(days: int | None = None, limit: int = 10):
         cursor.execute(
             '''
             SELECT message_id, username, posted_at, views, reactions,
-                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality,
+                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as engagement,
                    current_message_id
             FROM messages
             WHERE posted = TRUE AND posted_at IS NOT NULL
@@ -215,7 +215,7 @@ def load_top_posts(days: int | None = None, limit: int = 10):
         cursor.execute(
             '''
             SELECT message_id, username, posted_at, views, reactions,
-                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality,
+                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as engagement,
                    current_message_id
             FROM messages
             WHERE posted = TRUE AND posted_at IS NOT NULL
@@ -234,7 +234,7 @@ def load_top_posts(days: int | None = None, limit: int = 10):
             'posted_at': row[2],
             'views': row[3],
             'reactions': row[4],
-            'quality': row[5],
+            'engagement': row[5],
             'url': f"https://t.me/c/{channel_id_url}/{row[6]}" if row[6] else "",
         }
         for row in rows
@@ -245,7 +245,7 @@ def export_top_posts_csv(posts):
     filename = f"top_posts_{datetime.now().date()}.csv"
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter=';')
-        writer.writerow(["username", "posted_at", "views", "reactions", "quality", "url"])
+        writer.writerow(["username", "posted_at", "views", "reactions", "отклик", "url"])
         for post in posts:
             writer.writerow([
                 post["username"],
@@ -264,7 +264,11 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
-    top = sorted(stat, key=lambda x: x['reaction_rate'], reverse=True)[:5]
+    top = sorted(
+        stat,
+        key=lambda x: (x['engagement'], x['postcount'], x['reactionstotal'], x['viewstotal'], x['queuedcount']),
+        reverse=True
+    )[:5]
     if not top:
         raise ValueError("Нет данных для отображения")
 
@@ -276,7 +280,7 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
         title += f" — последние {days} дн."
     fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
 
-    cols = ["#", "Админ", "Посты", "В очереди", "Просмотры", "Реакции", "Quality"]
+    cols = ["#", "Админ", "Посты", "В очереди", "Просмотры", "Реакции", "Отклик"]
     rows = [
         [
             str(i + 1),
@@ -285,7 +289,7 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
             str(a['queuedcount']),
             str(a['viewstotal']),
             str(a['reactionstotal']),
-            f"{a['reaction_rate']:.2f}",
+            f"{a['engagement']:.2f}",
         ]
         for i, a in enumerate(top)
     ]

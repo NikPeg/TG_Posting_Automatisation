@@ -1,4 +1,6 @@
 import os
+import random
+import importlib
 import logging
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
@@ -10,9 +12,11 @@ import certifi
 
 import msgs
 import admin_utils
+import timezone
 from posting import (
     forward_saved_message,
-    periodic_post
+    periodic_post,
+    post_random,
 )
 from adminstat import (
     get_admin_uns,
@@ -22,6 +26,8 @@ from adminstat import (
     load_top_posts,
     export_top_posts_csv,
     render_best_admins_image,
+    add_post_to_count,
+    decrement_queued_to_count,
 )
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -162,25 +168,46 @@ async def help_command(message: types.Message):
 @dp.message(Command("post"))
 @general_admin_required
 async def post_message(message: types.Message):
-    logger.info(f"Команда /post использована пользователем @{message.from_user.username} с аргументом {message.text.split()[1] if len(message.text.split()) > 1 else 'нет'}")
+    args = message.text.split()
+    logger.info(f"Команда /post использована пользователем @{message.from_user.username}, аргументы: {args[1:]}")
     try:
-        args = message.text.split()
-        if len(args) < 2:
-            await message.answer(
-                "Используйте: /post <message_id>\n\n"
-                "Пример: /post 123\n"
-                "Список сообщений: /info"
-            )
+        # /post — случайный пост без проверки интервала
+        if len(args) == 1:
+            success = await post_random()
+            if success:
+                await message.answer("Пост опубликован")
+            else:
+                await message.answer("Не удалось опубликовать пост — нет доступных сообщений")
             return
 
-        message_id = int(args[1])
-        success = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
+        # /post @username — случайный пост от конкретного админа
+        if args[1].startswith('@'):
+            username = args[1].lstrip('@')
+            all_msgs = msgs.load_messages()
+            user_msgs = [m for m in all_msgs if m.get('username') == username]
+            if not user_msgs:
+                await message.answer(f"У @{username} нет сообщений в очереди")
+                return
+            chosen = random.choice(user_msgs)
+            success, reason = await forward_saved_message(chosen['message_id'], CHANNEL_CHAT_ID)
+            if success:
+                add_post_to_count(username)
+                decrement_queued_to_count(username)
+                await message.answer(f"Пост от @{username} опубликован")
+            else:
+                await message.answer(f"Не удалось опубликовать пост от @{username}: {reason}")
+            return
 
+        # /post <message_id> — конкретный пост по ID
+        message_id = int(args[1])
+        success, reason = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
         if success:
             await message.answer(f"Сообщение {message_id} переслано в канал")
         else:
-            await message.answer(f"Не удалось переслать сообщение {message_id}")
+            await message.answer(f"Не удалось переслать сообщение {message_id}: {reason}")
 
+    except ValueError:
+        await message.answer("Используйте:\n/post — случайный пост прямо сейчас\n/post @username — пост от конкретного админа\n/post <id> — пост по ID")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
