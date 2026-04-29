@@ -185,6 +185,11 @@ def load_stat(days: int | None = None):
     return result  
 
 def load_top_posts(days: int | None = None, limit: int = 10):
+    load_dotenv(override=True)
+    channel_id = int(os.getenv('CHANNEL_ID', 0))
+    # Для приватных каналов ID вида -100XXXXXXXXX → убираем -100
+    channel_id_url = str(channel_id).replace('-100', '') if channel_id < 0 else str(channel_id)
+
     now = timezone.tz_now()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
@@ -195,7 +200,8 @@ def load_top_posts(days: int | None = None, limit: int = 10):
         cursor.execute(
             '''
             SELECT message_id, username, posted_at, views, reactions,
-                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality
+                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality,
+                   current_message_id
             FROM messages
             WHERE posted = TRUE AND posted_at IS NOT NULL
             AND posted_at >= ? AND posted_at <= ?
@@ -208,7 +214,8 @@ def load_top_posts(days: int | None = None, limit: int = 10):
         cursor.execute(
             '''
             SELECT message_id, username, posted_at, views, reactions,
-                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality
+                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality,
+                   current_message_id
             FROM messages
             WHERE posted = TRUE AND posted_at IS NOT NULL
             ORDER BY views DESC
@@ -227,6 +234,7 @@ def load_top_posts(days: int | None = None, limit: int = 10):
             'views': row[3],
             'reactions': row[4],
             'quality': row[5],
+            'url': f"https://t.me/c/{channel_id_url}/{row[6]}" if row[6] else "",
         }
         for row in rows
     ]
@@ -236,15 +244,15 @@ def export_top_posts_csv(posts):
     filename = f"top_posts_{datetime.now().date()}.csv"
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter=';')
-        writer.writerow(["message_id", "username", "posted_at", "views", "reactions", "quality"])
+        writer.writerow(["username", "posted_at", "views", "reactions", "quality", "url"])
         for post in posts:
             writer.writerow([
-                post["message_id"],
                 post["username"],
                 post["posted_at"],
                 post["views"],
                 post["reactions"],
                 post["quality"],
+                post["url"],
             ])
     return filename
 
