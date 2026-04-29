@@ -401,6 +401,18 @@ async def clear_posted(message: types.Message):
         await message.answer(f"Ошибка: {e}")
 
 
+@dp.message(Command("collectstats"))
+@general_admin_required
+async def collectstats_command(message: types.Message):
+    logger.info(f"Команда /collectstats использована пользователем @{message.from_user.username}")
+    await message.answer("Запускаю сбор статистики...")
+    try:
+        await msgs.collect_message_stats()
+        await message.answer("Готово. Смотри логи — если ошибок нет, всё работает")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
+
 @dp.message(Command("messages"))
 @admin_required
 async def messages_command(message: types.Message):

@@ -167,20 +167,17 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 
 
 async def post(message_id: int):
-    from config import LAST_TIME_POST, POSTING_INTERVAL
-    if (timezone.tz_now() - LAST_TIME_POST >= timedelta(seconds = POSTING_INTERVAL)):
-        result = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
+    result = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
+    if result[0]:
         with open('.env', 'r') as f:
             lines = f.readlines()
-
         with open('.env', 'w') as f:
             for line in lines:
                 if line.startswith('LAST_TIME_POST'):
                     f.write(f"LAST_TIME_POST = {timezone.tz_now().isoformat()}\n")
                 else:
                     f.write(line)
-        return result
-    return False, "Интервал между постами ещё не истёк"
+    return result
 
 
 async def post_random():
@@ -256,8 +253,10 @@ async def periodic_post():
         #             else:
         #                 f.write(line)
         if time(config.START_HOUR, config.START_MINUTE) <= now <= time(config.END_HOUR, config.END_MINUTE):
-            await post_random()
-            await msgs.collect_message_stats()
+            elapsed = (timezone.tz_now() - config.LAST_TIME_POST).total_seconds()
+            if elapsed >= config.POSTING_INTERVAL:
+                await post_random()
+                await msgs.collect_message_stats()
             await asyncio.sleep(config.POSTING_INTERVAL)
         else:
             await asyncio.sleep(60)
