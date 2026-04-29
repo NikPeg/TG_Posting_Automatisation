@@ -146,7 +146,7 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 
 async def post(message_id: int):
     from config import LAST_TIME_POST, POSTING_INTERVAL
-    if (datetime.now() - LAST_TIME_POST >= timedelta(seconds = POSTING_INTERVAL)):
+    if (timezone.tz_now() - LAST_TIME_POST >= timedelta(seconds = POSTING_INTERVAL)):
         success = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
         with open('.env', 'r') as f:
             lines = f.readlines()
