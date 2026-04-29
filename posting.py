@@ -14,7 +14,9 @@ from adminstat import (
     get_admin_ids,
     get_admin_uns,
     add_post_to_count,
-    decrement_queued_to_count
+    decrement_queued_to_count,
+    get_meta,
+    set_meta,
 )
 
 load_dotenv(override=True)
@@ -191,14 +193,7 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 async def post(message_id: int):
     result = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
     if result[0]:
-        with open('.env', 'r') as f:
-            lines = f.readlines()
-        with open('.env', 'w') as f:
-            for line in lines:
-                if line.startswith('LAST_TIME_POST'):
-                    f.write(f"LAST_TIME_POST = {timezone.tz_now().isoformat()}\n")
-                else:
-                    f.write(line)
+        set_meta('last_time_post', timezone.tz_now().isoformat())
     return result
 
 
@@ -274,8 +269,24 @@ async def periodic_post():
         #                 f.write(f"LAST_RESET_DATE = {today.isoformat()}\n")
         #             else:
         #                 f.write(line)
-        if time(config.START_HOUR, config.START_MINUTE) <= now <= time(config.END_HOUR, config.END_MINUTE):
-            elapsed = (timezone.tz_now() - config.LAST_TIME_POST).total_seconds()
+        start = time(config.START_HOUR, config.START_MINUTE)
+        end = time(config.END_HOUR, config.END_MINUTE)
+        if start <= end:
+            in_window = start <= now <= end
+        else:  # переход через полночь: например 07:00–02:00
+            in_window = now >= start or now <= end
+
+        if in_window:
+            raw = get_meta('last_time_post')
+            if raw:
+                from datetime import timezone as dt_timezone
+                last_post = datetime.fromisoformat(raw)
+                if last_post.tzinfo is None:
+                    last_post = last_post.replace(tzinfo=dt_timezone.utc)
+                elapsed = (timezone.tz_now() - last_post).total_seconds()
+            else:
+                elapsed = config.POSTING_INTERVAL  # первый запуск — постим сразу
+
             if elapsed >= config.POSTING_INTERVAL:
                 await post_random()
                 await msgs.collect_message_stats()
