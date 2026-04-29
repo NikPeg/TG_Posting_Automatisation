@@ -18,7 +18,9 @@ from adminstat import (
     get_admin_uns,
     get_admin_ids,
     load_stat,
-    export_admin_stat_csv
+    export_admin_stat_csv,
+    load_top_posts,
+    export_top_posts_csv,
 )
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -400,6 +402,41 @@ async def collectstats_command(message: types.Message):
         await message.answer("Готово. Смотри логи — если ошибок нет, всё работает")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
+
+
+@dp.message(Command("posts"))
+@admin_required
+async def posts_command(message: types.Message):
+    logger.info(f"Команда /posts использована пользователем @{message.from_user.username}")
+    args = message.text.split()
+    days = None
+    if len(args) == 2:
+        try:
+            days = int(args[1])
+            if days <= 0:
+                await message.answer("Количество дней должно быть положительным числом")
+                return
+        except ValueError:
+            await message.answer("Используйте: /posts или /posts <N>\nПример: /posts 7")
+            return
+    elif len(args) > 2:
+        await message.answer("Используйте: /posts или /posts <N>\nПример: /posts 7")
+        return
+
+    posts = load_top_posts(days=days)
+    if not posts:
+        await message.answer("Нет опубликованных постов за выбранный период")
+        return
+
+    filename = export_top_posts_csv(posts)
+    caption = f"🏆 Топ-{len(posts)} постов"
+    if days:
+        caption += f" за последние {days} дн."
+    else:
+        caption += " за всё время"
+
+    await message.answer_document(types.FSInputFile(filename), caption=caption)
+    os.remove(filename)
 
 
 @dp.message(Command("messages"))

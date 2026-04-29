@@ -128,19 +128,21 @@ def load_stat(days: int | None = None):
     period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
     period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-    conn = sqlite3.connect(MESSAGES_DB)
-    cursor = conn.cursor()
+    stat_conn = sqlite3.connect(STATISTICS_DB)
+    msg_conn = sqlite3.connect(MESSAGES_DB)
+    stat_conn.row_factory = sqlite3.Row
+
+    cursor = stat_conn.cursor()
+    cursor.execute('SELECT username FROM statistics')
+    all_admins = [row[0] for row in cursor.fetchall()]
+    stat_conn.close()
+
+    cursor = msg_conn.cursor()
     cursor.execute(
         '''
         SELECT
             m.username,
             COUNT(*) as postcount,
-            (
-                SELECT COUNT(*)
-                FROM messages q
-                WHERE q.username = m.username
-                AND q.posted = FALSE
-            ) as queuedcount,
             COALESCE(SUM(m.views), 0) as viewstotal,
             COALESCE(SUM(m.reactions), 0) as reactionstotal
         FROM messages m
@@ -152,9 +154,100 @@ def load_stat(days: int | None = None):
         ''',
         (period_start.isoformat(), period_end.isoformat())
     )
+    period_rows = {row[0]: row for row in cursor.fetchall()}
+
+    result = []
+    for username in all_admins:
+        if username in period_rows:
+            row = period_rows[username]
+            postcount, viewstotal, reactionstotal = row[1], row[2], row[3]
+        else:
+            postcount, viewstotal, reactionstotal = 0, 0, 0
+
+        queued_cursor = msg_conn.cursor()
+        queued_cursor.execute(
+            'SELECT COUNT(*) FROM messages WHERE username = ? AND posted = FALSE',
+            (username,)
+        )
+        queuedcount = queued_cursor.fetchone()[0]
+
+        rate = round(reactionstotal / viewstotal * 100, 2) if viewstotal > 0 else 0.0
+        result.append({
+            'username': username,
+            'postcount': postcount,
+            'queuedcount': queuedcount,
+            'viewstotal': viewstotal,
+            'reactionstotal': reactionstotal,
+            'reaction_rate': rate,
+        })
+
+    msg_conn.close()
+    return result  
+
+def load_top_posts(days: int | None = None, limit: int = 10):
+    now = timezone.tz_now()
+    conn = sqlite3.connect(MESSAGES_DB)
+    cursor = conn.cursor()
+
+    if days is not None:
+        period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+        period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        cursor.execute(
+            '''
+            SELECT message_id, username, posted_at, views, reactions,
+                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality
+            FROM messages
+            WHERE posted = TRUE AND posted_at IS NOT NULL
+            AND posted_at >= ? AND posted_at <= ?
+            ORDER BY views DESC
+            LIMIT ?
+            ''',
+            (period_start.isoformat(), period_end.isoformat(), limit)
+        )
+    else:
+        cursor.execute(
+            '''
+            SELECT message_id, username, posted_at, views, reactions,
+                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as quality
+            FROM messages
+            WHERE posted = TRUE AND posted_at IS NOT NULL
+            ORDER BY views DESC
+            LIMIT ?
+            ''',
+            (limit,)
+        )
+
     rows = cursor.fetchall()
     conn.close()
-    return [{'username': row[0], 'postcount': row[1], 'queuedcount': row[2], 'viewstotal': row[3], 'reactionstotal': row[4], 'reaction_rate': round((row[4] / row[3] * 100), 2) if row[3] > 0 else 0} for row in rows]  
+    return [
+        {
+            'message_id': row[0],
+            'username': row[1],
+            'posted_at': row[2],
+            'views': row[3],
+            'reactions': row[4],
+            'quality': row[5],
+        }
+        for row in rows
+    ]
+
+
+def export_top_posts_csv(posts):
+    filename = f"top_posts_{datetime.now().date()}.csv"
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, delimiter=';')
+        writer.writerow(["message_id", "username", "posted_at", "views", "reactions", "quality"])
+        for post in posts:
+            writer.writerow([
+                post["message_id"],
+                post["username"],
+                post["posted_at"],
+                post["views"],
+                post["reactions"],
+                post["quality"],
+            ])
+    return filename
+
 
 def save_stat(stat):
     init_statistics_db()
