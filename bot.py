@@ -144,7 +144,7 @@ async def help_command(message: types.Message):
     await message.answer(
         "Команды для администраторов:\n\n"
         "/help — список команд\n"
-        "/stat — статистика по всем админам за всё время\n"
+        "/stat — статистика по всем админам за всё время (по умолчанию)\n"
         "/stat <b>&lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
         "/messages — сохранённые сообщения\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
@@ -352,12 +352,15 @@ async def stat_command(message: types.Message):
 async def config_command(message: types.Message):
     logger.info(f"Команда /config использована пользователем @{message.from_user.username}")
     import config
+    importlib.reload(config)
     admins = get_admin_uns()
+    from datetime import timedelta
+    last_post_local = config.LAST_TIME_POST + timedelta(hours=config.TIMEZONE_OFFSET)
     response = "Текущие настройки конфигурации:\n\n"
     response += f"Время начала постинга: {config.START_HOUR:02d}:{config.START_MINUTE:02d}\n"
     response += f"Время конца постинга: {config.END_HOUR:02d}:{config.END_MINUTE:02d}\n"
     response += f"Интервал постинга: {round(config.POSTING_INTERVAL)} секунд\n"
-    response += f"Последний пост: {config.LAST_TIME_POST}\n"
+    response += f"Последний пост: {last_post_local.strftime('%Y-%m-%d %H:%M:%S')} (UTC+{config.TIMEZONE_OFFSET})\n"
     response += f"Последний сброс статистики: {config.LAST_RESET_DATE}\n"
     response += f"Интервал сброса статистики: {config.RESET_INTERVAL_DAYS} дней\n"
     response += f"Админы: {', '.join('@' + adm for adm in admins)}\n"

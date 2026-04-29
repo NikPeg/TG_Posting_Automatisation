@@ -92,12 +92,12 @@ def export_admin_stat_csv(stat):
             "queued",
             "views",
             "reactions",
-            "reactions/100views"
+            "quality"
         ])
         for adm in stat:
             views = adm["viewstotal"]
             reactions = adm["reactionstotal"]
-            rate = round(reactions / views * 100, 2) if views > 0 else 0
+            rate = round(reactions / views * 100, 2) if views > 0 else 0.0
             writer.writerow([
                 adm["username"],
                 adm["postcount"],
