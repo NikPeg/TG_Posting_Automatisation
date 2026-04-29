@@ -353,6 +353,16 @@ def add_queued_to_count(admin):
     conn.close()
 
 
+def delete_admin_from_stat(username: str):
+    init_statistics_db()
+    conn = sqlite3.connect(STATISTICS_DB)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM statistics WHERE username = ?', (username,))
+    conn.commit()
+    conn.close()
+    logger.info(f"Админ @{username} удалён из статистики")
+
+
 def decrement_queued_to_count(admin):
     init_statistics_db()
     conn = sqlite3.connect(STATISTICS_DB)

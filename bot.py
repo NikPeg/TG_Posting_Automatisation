@@ -469,6 +469,22 @@ async def posts_command(message: types.Message):
     await message.answer_document(types.FSInputFile(filename), caption=caption)
     os.remove(filename)
 
+    # Сообщение со ссылками, отсортированными по убыванию вовлечённости
+    posts_with_url = [p for p in posts if p.get('url')]
+    if posts_with_url:
+        sorted_by_engagement = sorted(
+            posts_with_url,
+            key=lambda p: p['reactions'] / p['views'] if p['views'] > 0 else 0,
+            reverse=True
+        )
+        header = caption + " — ссылки по вовлечённости:\n"
+        lines = []
+        for p in sorted_by_engagement:
+            views = p['views'] or 0
+            reactions = p['reactions'] or 0
+            lines.append(f"{reactions}❤️ {views}👁  {p['url']}")
+        await message.answer(header + "\n".join(lines))
+
 
 @dp.message(Command("best"))
 @admin_required
@@ -584,7 +600,9 @@ async def del_admin(message: types.Message):
                 else:
                     f.write(line)
 
-        await message.answer(f"Пользователь {new_id} лишён прав админа.")
+        from adminstat import delete_admin_from_stat
+        delete_admin_from_stat(new_id)
+        await message.answer(f"Пользователь {new_id} лишён прав админа и удалён из статистики.")
 
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
