@@ -28,6 +28,27 @@ new_message_event = asyncio.Event()
 is_waiting_for_message = False
 
 
+def _classify_error_str(text: str) -> str:
+    t = text.lower()
+    if "blocked by the user" in t:
+        return "Админ заблокировал бота"
+    if "bot was kicked" in t or "chat not found" in t or "group chat was deleted" in t or "user is deactivated" in t:
+        return "Чат с ботом недоступен (удалён или бот кикнут)"
+    if "message to forward not found" in t or "no messages" in t:
+        return "Сообщение удалено из чата с ботом"
+    if "message to copy not found" in t:
+        return "Оригинальное сообщение удалено из источника"
+    if "not enough rights" in t or "have no rights" in t or "need administrator" in t:
+        return "Нет прав для публикации в канале"
+    if "flood" in t or "too many requests" in t:
+        return "Превышен лимит запросов Telegram (flood)"
+    return text or "Неизвестная ошибка"
+
+
+def _classify_error(e: Exception) -> str:
+    return _classify_error_str(str(e))
+
+
 async def forward_saved_message(target_message_id: int, target_chat_id: int):
 
     messages = msgs.load_messages()
@@ -74,13 +95,14 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                     logger.info(forwarded_msg[0].message_id)
                     for msgts, fmsg in zip(msg_to_send, forwarded_msg):
                         msgs.update_message_posted(msgts, msg['chat_id'], fmsg.message_id)
-                    return True
+                    return True, None
 
                 except Exception as e:
-                    logger.error(f"Ошибка при пересылке сообщения {target_message_id}: {e}")
+                    reason = _classify_error(e)
+                    logger.error(f"Ошибка при пересылке сообщения {target_message_id}: {reason}")
                     if "no messages" in str(e):
                         msgs.clear_message(target_message_id, msg.get('user_id'))
-                    return False
+                    return False, reason
             else:
                 other_bot_token = bots[msg.get('user_id')]
                 namebot_api_url = f"https://api.telegram.org/bot{other_bot_token}"
@@ -105,10 +127,11 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 
                             if not data.get("ok", False):
                                 description = data.get("description", "")
-                                logger.error(f"Ошибка Telegram API при отправке другим ботом: {data}")
+                                reason = _classify_error_str(description)
+                                logger.error(f"Ошибка при отправке другим ботом сообщения {target_message_id}: {reason}")
                                 if "message" in description.lower():
                                     msgs.clear_message(target_message_id, msg.get('user_id'))
-                                return False
+                                return False, reason
 
                             forwarded_msg = data["result"]
                         
@@ -132,22 +155,21 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                             msg['chat_id'],
                             fmsg['message_id']
                         )
-
-                    return True
+                    return True, None
 
                 except Exception as e:
-                    logger.error(f"Ошибка при отправке другим ботом: {e}")
-                    return False
+                    reason = _classify_error(e)
+                    logger.error(f"Ошибка при отправке другим ботом сообщения {target_message_id}: {reason}")
+                    return False, reason
 
-
-    logger.warning(f"Сообщение {target_message_id} не найдено")
-    return False
+    logger.warning(f"Сообщение {target_message_id} не найдено в базе")
+    return False, "Сообщение не найдено в базе данных"
 
 
 async def post(message_id: int):
     from config import LAST_TIME_POST, POSTING_INTERVAL
     if (timezone.tz_now() - LAST_TIME_POST >= timedelta(seconds = POSTING_INTERVAL)):
-        success = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
+        result = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
         with open('.env', 'r') as f:
             lines = f.readlines()
 
@@ -157,7 +179,8 @@ async def post(message_id: int):
                     f.write(f"LAST_TIME_POST = {timezone.tz_now().isoformat()}\n")
                 else:
                     f.write(line)
-        return success
+        return result
+    return False, "Интервал между постами ещё не истёк"
 
 
 async def post_random():
@@ -200,15 +223,16 @@ async def post_random():
             logger.info(f"Выбран админ для постинга: {rand_adm}. Используем основного бота")
 
         msg = random.choice(msg_from_adm)
-        success = await post(msg['message_id'])
+        success, reason = await post(msg['message_id'])
         if success:
             add_post_to_count(rand_adm)
             decrement_queued_to_count(rand_adm)
+            return True
         else:
-            logger.error(f"Не удалось опубликовать пост {msg['message_id']}")
-        return success
+            logger.warning(f"Не удалось опубликовать пост {msg['message_id']} от админа {rand_adm}: {reason}. Пробуем следующего")
+            continue
 
-    logger.warning("Ни у одного админа нет заготовленных постов")
+    logger.warning("Не удалось опубликовать ни одного поста от всех доступных админов")
 
 
 async def periodic_post():
