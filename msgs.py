@@ -245,8 +245,6 @@ async def collect_message_stats():
                         logger.warning(f"Message {current_msg_id} not found in channel")
                 except Exception as e:
                     logger.error(f"Error fetching stats for message {current_msg_id}: {e}")
-        from adminstat import set_meta
-        set_meta('last_collect_time', timezone.tz_now().isoformat())
     except Exception as e:
         logger.error(f"Error in collect_message_stats: {e}")
 

@@ -740,31 +740,6 @@ async def group_command(message: types.Message):
     await message.answer(f"Режим сохранения медиа для @{message.from_user.username} установлен: {'группами' if mode else 'отдельно'}")
 
 
-@dp.message(Command("tzset"))
-@general_admin_required
-async def tzset_command(message: types.Message):
-    logger.info(f"Команда /tzset использована пользователем @{message.from_user.username} с аргументом {message.text.split()[1] if len(message.text.split()) > 1 else 'нет'}")
-    try:
-        args = message.text.split()
-        if len(args) != 2:
-            await message.answer("Используйте: /tzset <offset>\nПример: /tzset 3")
-            return
-        offset = int(args[1])
-        with open('.env', 'r') as f:
-            lines = f.readlines()
-
-        with open('.env', 'w') as f:
-            for line in lines:
-                if line.startswith('TIMEZONE_OFFSET'):
-                    f.write(f"TIMEZONE_OFFSET = {offset}\n")
-                else:
-                    f.write(line)
-        await message.answer(f"Смещение часового пояса установлено: {offset} часов")
-    except ValueError:
-        await message.answer("Смещение должно быть целым числом")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
-
 
 async def main():
     try:

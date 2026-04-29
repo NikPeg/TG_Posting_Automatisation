@@ -15,8 +15,6 @@ from adminstat import (
     get_admin_uns,
     add_post_to_count,
     decrement_queued_to_count,
-    get_meta,
-    set_meta,
 )
 
 load_dotenv(override=True)
@@ -28,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 new_message_event = asyncio.Event()
 is_waiting_for_message = False
+
+
+def _post_url(channel_id: int, message_id: int) -> str:
+    cid = str(channel_id).replace('-100', '') if channel_id < 0 else str(channel_id)
+    return f"https://t.me/c/{cid}/{message_id}"
 
 
 def _classify_error_str(text: str) -> str:
@@ -92,9 +95,9 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                             message_ids=msg_to_send
                         )
 
-                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал")
-                    logger.info(f"Сообщение {target_message_id}{mgid} переслано в канал")
-                    logger.info(forwarded_msg[0].message_id)
+                    post_link = _post_url(target_chat_id, forwarded_msg[0].message_id)
+                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал\n{post_link}")
+                    logger.info(f"Сообщение {target_message_id}{mgid} переслано в канал: {post_link}")
                     for msgts, fmsg in zip(msg_to_send, forwarded_msg):
                         msgs.update_message_posted(msgts, msg['chat_id'], fmsg.message_id)
                     return True, None
@@ -138,12 +141,13 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                                 named_bot_ok = True
 
                         if named_bot_ok:
+                            post_link = _post_url(target_chat_id, forwarded_msg[0]['message_id'])
                             genbot_api_url = f"https://api.telegram.org/bot{os.getenv('BOT_TOKEN')}"
                             async with session.post(
                                 f"{genbot_api_url}/sendMessage",
                                 json={
                                     "chat_id": msg['chat_id'],
-                                    "text": f"Сообщение {msg['message_id']}{mgid} переслано в канал"
+                                    "text": f"Сообщение {msg['message_id']}{mgid} переслано в канал\n{post_link}"
                                 }
                             ) as response:
                                 data = await response.json()
@@ -176,8 +180,9 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                             from_chat_id=msg['chat_id'],
                             message_ids=msg_to_send
                         )
-                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал (через основного бота)")
-                    logger.info(f"Сообщение {target_message_id}{mgid} переслано через основного бота")
+                    post_link = _post_url(target_chat_id, forwarded_msg[0].message_id)
+                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал (через основного бота)\n{post_link}")
+                    logger.info(f"Сообщение {target_message_id}{mgid} переслано через основного бота: {post_link}")
                     for msgts, fmsg in zip(msg_to_send, forwarded_msg):
                         msgs.update_message_posted(msgts, msg['chat_id'], fmsg.message_id)
                     return True, None
@@ -193,7 +198,14 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 async def post(message_id: int):
     result = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
     if result[0]:
-        set_meta('last_time_post', timezone.tz_now().isoformat())
+        with open('.env', 'r') as f:
+            lines = f.readlines()
+        with open('.env', 'w') as f:
+            for line in lines:
+                if line.startswith('LAST_TIME_POST'):
+                    f.write(f"LAST_TIME_POST = {timezone.tz_now().isoformat()}\n")
+                else:
+                    f.write(line)
     return result
 
 
@@ -277,16 +289,7 @@ async def periodic_post():
             in_window = now >= start or now <= end
 
         if in_window:
-            raw = get_meta('last_time_post')
-            if raw:
-                from datetime import timezone as dt_timezone
-                last_post = datetime.fromisoformat(raw)
-                if last_post.tzinfo is None:
-                    last_post = last_post.replace(tzinfo=dt_timezone.utc)
-                elapsed = (timezone.tz_now() - last_post).total_seconds()
-            else:
-                elapsed = config.POSTING_INTERVAL  # первый запуск — постим сразу
-
+            elapsed = (timezone.tz_now() - config.LAST_TIME_POST).total_seconds()
             if elapsed >= config.POSTING_INTERVAL:
                 await post_random()
                 await msgs.collect_message_stats()
