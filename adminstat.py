@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import timezone
 import csv
+import io
 
 STATISTICS_DB = "statistics.db"
 MESSAGES_DB = "messages.db"
@@ -255,6 +256,71 @@ def export_top_posts_csv(posts):
                 post["url"],
             ])
     return filename
+
+
+def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    top = sorted(stat, key=lambda x: x['reaction_rate'], reverse=True)[:5]
+    if not top:
+        raise ValueError("Нет данных для отображения")
+
+    fig, ax = plt.subplots(figsize=(9, 2.2 + 0.55 * len(top)))
+    ax.axis('off')
+
+    title = "🏆 Топ админов по качеству"
+    if days:
+        title += f" — последние {days} дн."
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
+
+    cols = ["Админ", "Посты", "В очереди", "Просмотры", "Реакции", "Quality"]
+    rows = [
+        [
+            f"@{a['username']}",
+            str(a['postcount']),
+            str(a['queuedcount']),
+            str(a['viewstotal']),
+            str(a['reactionstotal']),
+            f"{a['reaction_rate']:.2f}",
+        ]
+        for a in top
+    ]
+
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    for i, row in enumerate(rows):
+        row[0] = f"{medals[i]} {row[0]}"
+
+    col_widths = [0.22, 0.10, 0.13, 0.15, 0.15, 0.13]
+    table = ax.table(
+        cellText=rows,
+        colLabels=cols,
+        cellLoc='center',
+        loc='center',
+        colWidths=col_widths,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 1.6)
+
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor('#cccccc')
+        if row_idx == 0:
+            cell.set_facecolor('#2f3d4e')
+            cell.set_text_props(color='white', fontweight='bold')
+        elif row_idx % 2 == 0:
+            cell.set_facecolor('#f2f4f6')
+        else:
+            cell.set_facecolor('#ffffff')
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 
 def save_stat(stat):

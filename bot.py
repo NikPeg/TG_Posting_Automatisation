@@ -21,6 +21,7 @@ from adminstat import (
     export_admin_stat_csv,
     load_top_posts,
     export_top_posts_csv,
+    render_best_admins_image,
 )
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -150,7 +151,8 @@ async def help_command(message: types.Message):
         "/stat <b>&lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
         "/posts — топ-10 постов по просмотрам за всё время\n"
         "/posts <b>&lt;N&gt;</b> — топ-10 постов за последние N дней\n"
-        "/messages — сохранённые сообщения\n"
+        "/best — топ-5 админов по качеству (картинка)\n"
+        "/best <b>&lt;N&gt;</b> — топ-5 за последние N дней\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
         "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n",
         parse_mode="HTML"
@@ -439,6 +441,38 @@ async def posts_command(message: types.Message):
 
     await message.answer_document(types.FSInputFile(filename), caption=caption)
     os.remove(filename)
+
+
+@dp.message(Command("best"))
+@admin_required
+async def best_command(message: types.Message):
+    logger.info(f"Команда /best использована пользователем @{message.from_user.username}")
+    args = message.text.split()
+    days = None
+    if len(args) == 2:
+        try:
+            days = int(args[1])
+            if days <= 0:
+                await message.answer("Количество дней должно быть положительным числом")
+                return
+        except ValueError:
+            await message.answer("Используйте: /best или /best <N>\nПример: /best 7")
+            return
+    elif len(args) > 2:
+        await message.answer("Используйте: /best или /best <N>\nПример: /best 7")
+        return
+
+    try:
+        stat = load_stat(days=days)
+        buf = render_best_admins_image(stat, days=days)
+        caption = "🏆 Топ-5 админов по качеству"
+        if days:
+            caption += f" за последние {days} дн."
+        await message.answer_photo(types.BufferedInputFile(buf.read(), filename="best.png"), caption=caption)
+    except ValueError as e:
+        await message.answer(str(e))
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
 
 
 @dp.message(Command("messages"))
