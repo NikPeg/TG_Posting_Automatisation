@@ -477,7 +477,7 @@ async def posts_command(message: types.Message):
             key=lambda p: p['reactions'] / p['views'] if p['views'] > 0 else 0,
             reverse=True
         )
-        header = caption + " — ссылки по вовлечённости:\n"
+        header = caption + ":\n"
         lines = []
         for p in sorted_by_engagement:
             views = p['views'] or 0
