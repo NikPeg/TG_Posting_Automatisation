@@ -222,8 +222,8 @@ async def post_random():
         msg = random.choice(msg_from_adm)
         success, reason = await post(msg['message_id'])
         if success:
-            add_post_to_count(rand_adm)
-            decrement_queued_to_count(rand_adm)
+            add_post_to_count(msg['username'])
+            decrement_queued_to_count(msg['username'])
             return True
         else:
             logger.warning(f"Не удалось опубликовать пост {msg['message_id']} от админа {rand_adm}: {reason}. Пробуем следующего")
