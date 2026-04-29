@@ -2,3 +2,4 @@
 __pycache__/
 *.session
 *.db
+runtime_data.json

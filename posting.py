@@ -10,6 +10,7 @@ import random
 from dotenv import load_dotenv
 import msgs
 import timezone
+import runtime
 from adminstat import (
     get_admin_ids,
     get_admin_uns,
@@ -198,14 +199,7 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
 async def post(message_id: int):
     result = await forward_saved_message(message_id, CHANNEL_CHAT_ID)
     if result[0]:
-        with open('.env', 'r') as f:
-            lines = f.readlines()
-        with open('.env', 'w') as f:
-            for line in lines:
-                if line.startswith('LAST_TIME_POST'):
-                    f.write(f"LAST_TIME_POST = {timezone.tz_now().isoformat()}\n")
-                else:
-                    f.write(line)
+        runtime.set_last_post_time(timezone.tz_now())
     return result
 
 
@@ -289,7 +283,7 @@ async def periodic_post():
             in_window = now >= start or now <= end
 
         if in_window:
-            elapsed = (timezone.tz_now() - config.LAST_TIME_POST).total_seconds()
+            elapsed = (timezone.tz_now() - runtime.get_last_post_time()).total_seconds()
             if elapsed >= config.POSTING_INTERVAL:
                 await post_random()
                 await msgs.collect_message_stats()
