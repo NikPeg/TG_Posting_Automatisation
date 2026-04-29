@@ -576,19 +576,23 @@ async def add_admin(message: types.Message):
 async def del_admin(message: types.Message):
     logger.info(f"Команда /deladm использована пользователем @{message.from_user.username} с аргументом {message.text.split()[1] if len(message.text.split()) > 1 else 'нет'}")
     try:
-        admins = get_admin_uns()
+        load_dotenv(override=True)
+        admin_uns = get_admin_uns()
+        admin_ids = os.getenv('ADMIN_IDS', '').split(',')
         args = message.text.split()
         if len(args) != 2:
             await message.answer("Используйте: /deladm @<username>\nПример: /deladm @ivan")
             return
 
-        new_id = args[1][1:]
-        if new_id in admins:
-            admins.remove(new_id)
-        else:
+        username = args[1].lstrip('@')
+        if username not in admin_uns:
             await message.answer("Этот пользователь уже отсутствует в списке админов.")
             return
 
+        idx = admin_uns.index(username)
+        admin_uns.pop(idx)
+        if idx < len(admin_ids):
+            admin_ids.pop(idx)
 
         with open('.env', 'r') as f:
             lines = f.readlines()
@@ -596,13 +600,15 @@ async def del_admin(message: types.Message):
         with open('.env', 'w') as f:
             for line in lines:
                 if line.startswith('ADMIN_UNS'):
-                    f.write(f"ADMIN_UNS = {','.join(map(str, admins))}\n")
+                    f.write(f"ADMIN_UNS = {','.join(admin_uns)}\n")
+                elif line.startswith('ADMIN_IDS'):
+                    f.write(f"ADMIN_IDS = {','.join(admin_ids)}\n")
                 else:
                     f.write(line)
 
         from adminstat import delete_admin_from_stat
-        delete_admin_from_stat(new_id)
-        await message.answer(f"Пользователь {new_id} лишён прав админа и удалён из статистики.")
+        delete_admin_from_stat(username)
+        await message.answer(f"Пользователь @{username} лишён прав админа и удалён из статистики.")
 
     except Exception as e:
         await message.answer(f"Ошибка: {e}")

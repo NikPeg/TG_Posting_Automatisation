@@ -252,7 +252,7 @@ def export_top_posts_csv(posts):
                 post["posted_at"],
                 post["views"],
                 post["reactions"],
-                post["quality"],
+                post["engagement"],
                 post["url"],
             ])
     return filename
