@@ -389,16 +389,18 @@ async def config_command(message: types.Message):
     importlib.reload(config)
     admins = get_admin_uns()
     from datetime import timedelta
-    last_post_utc = runtime.get_last_post_time()
-    last_post_local = last_post_utc + timedelta(hours=config.TIMEZONE_OFFSET)
+    offset = config.TIMEZONE_OFFSET
+    last_post_local = runtime.get_last_post_time() + timedelta(hours=offset)
+    last_reset_local = runtime.get_last_reset_date() + timedelta(hours=offset)
     response = "Текущие настройки конфигурации:\n\n"
     response += f"Время начала постинга: {config.START_HOUR:02d}:{config.START_MINUTE:02d}\n"
     response += f"Время конца постинга: {config.END_HOUR:02d}:{config.END_MINUTE:02d}\n"
     response += f"Интервал постинга: {round(config.POSTING_INTERVAL)} секунд\n"
-    response += f"Последний пост: {last_post_local.strftime('%Y-%m-%d %H:%M:%S')} (UTC+{config.TIMEZONE_OFFSET})\n"
+    response += f"Последний пост: {last_post_local.strftime('%Y-%m-%d %H:%M:%S')} (UTC+{offset})\n"
+    response += f"Последний сброс статистики: {last_reset_local.strftime('%Y-%m-%d')} (UTC+{offset})\n"
     response += f"Интервал сброса статистики: {config.RESET_INTERVAL_DAYS} дней\n"
     response += f"Админы: {', '.join('@' + adm for adm in admins)}\n"
-    response += f"Смещение часового пояса: {config.TIMEZONE_OFFSET} часов\n"
+    response += f"Смещение часового пояса: {offset} часов\n"
     await message.answer(response)
 
 
