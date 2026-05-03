@@ -5,7 +5,7 @@ import os
 from telethon import TelegramClient
 from dotenv import load_dotenv
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 import timezone
 import adminstat
 
@@ -242,9 +242,19 @@ async def collect_message_stats():
     try:
         async with TelegramClient('session', int(api_id), api_hash) as client:
             init_messages_db()
+            now = timezone.tz_now()
+            # Допущение: лайки и просмотры учитываются только за первые 24 часа после публикации.
+            # Статистика после этого периода может быть неполной — это приемлемо.
+            # Таким образом мы не делаем лишних запросов к API для старых постов.
+            window_start = (now - timedelta(hours=24)).isoformat()
             conn = sqlite3.connect(MESSAGES_DB)
             cursor = conn.cursor()
-            cursor.execute('SELECT message_id, chat_id, current_message_id FROM messages WHERE posted = TRUE AND current_message_id IS NOT NULL')
+            cursor.execute(
+                'SELECT message_id, chat_id, current_message_id FROM messages '
+                'WHERE posted = TRUE AND current_message_id IS NOT NULL '
+                'AND posted_at >= ?',
+                (window_start,)
+            )
             published_messages = cursor.fetchall()
             conn.close()
 
@@ -259,18 +269,21 @@ async def collect_message_stats():
 
                         conn = sqlite3.connect(MESSAGES_DB)
                         cursor = conn.cursor()
-                        now = timezone.tz_now()
-                        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-                        day_end = now.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
-                        cursor.execute('UPDATE messages SET views = ?, reactions = ? '
-                                       'WHERE message_id = ? AND chat_id = ?'
-                                       'AND posted_at >= ? AND posted_at <= ?',
-                                    (views, reactions_count, msg_id, chat_id, day_start, day_end))
+                        cursor.execute(
+                            'UPDATE messages SET views = ?, reactions = ? '
+                            'WHERE message_id = ? AND chat_id = ?',
+                            (views, reactions_count, msg_id, chat_id)
+                        )
                         conn.commit()
                         conn.close()
                         logger.info(f"Updated stats for message {current_msg_id}: views={views}, reactions={reactions_count}")
                     else:
-                        logger.warning(f"Message {current_msg_id} not found in channel")
+                        logger.warning(f"Сообщение {current_msg_id} не найдено в канале — удаляем из БД")
+                        conn = sqlite3.connect(MESSAGES_DB)
+                        cursor = conn.cursor()
+                        cursor.execute('DELETE FROM messages WHERE message_id = ? AND chat_id = ?', (msg_id, chat_id))
+                        conn.commit()
+                        conn.close()
                 except Exception as e:
                     logger.error(f"Error fetching stats for message {current_msg_id}: {e}")
     except Exception as e:

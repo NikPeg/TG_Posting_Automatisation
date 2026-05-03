@@ -57,6 +57,17 @@ def _classify_error(e: Exception) -> str:
     return _classify_error_str(str(e))
 
 
+def _is_unrecoverable(reason: str) -> bool:
+    """Ошибки, при которых сообщение никогда не получится опубликовать — удаляем из БД."""
+    unrecoverable = [
+        "Чат с ботом недоступен",
+        "Сообщение удалено из чата с ботом",
+        "Оригинальное сообщение удалено",
+        "Админ заблокировал бота",
+    ]
+    return any(marker in reason for marker in unrecoverable)
+
+
 async def forward_saved_message(target_message_id: int, target_chat_id: int):
 
     messages = msgs.load_messages()
@@ -108,8 +119,9 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                 except Exception as e:
                     reason = _classify_error(e)
                     logger.error(f"Ошибка при пересылке сообщения {target_message_id}: {reason}")
-                    if "no messages" in str(e):
+                    if _is_unrecoverable(reason):
                         msgs.clear_message(target_message_id, msg.get('user_id'))
+                        logger.warning(f"Сообщение {target_message_id} удалено из БД (неисправимая ошибка: {reason})")
                     return False, reason
             else:
                 other_bot_token = bots[msg.get('user_id')]
@@ -137,8 +149,9 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                             if not data.get("ok", False):
                                 description = data.get("description", "")
                                 named_bot_fail_reason = _classify_error_str(description)
-                                if "message" in description.lower():
+                                if _is_unrecoverable(named_bot_fail_reason):
                                     msgs.clear_message(target_message_id, msg.get('user_id'))
+                                    logger.warning(f"Сообщение {target_message_id} удалено из БД (неисправимая ошибка именного бота: {named_bot_fail_reason})")
                             else:
                                 forwarded_msg = data["result"]
                                 named_bot_ok = True
@@ -192,6 +205,9 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                 except Exception as e:
                     reason = _classify_error(e)
                     logger.error(f"Fallback через основного бота тоже не удался для сообщения {target_message_id}: {reason}")
+                    if _is_unrecoverable(reason):
+                        msgs.clear_message(target_message_id, msg.get('user_id'))
+                        logger.warning(f"Сообщение {target_message_id} удалено из БД (неисправимая ошибка fallback: {reason})")
                     return False, reason
 
     logger.warning(f"Сообщение {target_message_id} не найдено в базе")
