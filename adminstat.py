@@ -213,7 +213,7 @@ def load_stat(days: int | None = None):
     msg_conn.close()
     return result  
 
-def load_top_posts(days: int | None = None, limit: int = 10):
+def load_top_posts(days: int | None = None, limit: int = 10, username: str | None = None):
     load_dotenv(override=True)
     channel_id = int(os.getenv('CHANNEL_ID', 0))
     # Для приватных каналов ID вида -100XXXXXXXXX → убираем -100
@@ -228,35 +228,35 @@ def load_top_posts(days: int | None = None, limit: int = 10):
     # чтобы не терять посты с реакциями при нулевых просмотрах в Telethon-кэше.
     engagement_expr = 'CASE WHEN views > 0 THEN CAST(reactions AS FLOAT) / views ELSE 0.0 END'
 
+    where_parts = ['posted = TRUE', 'posted_at IS NOT NULL']
+    params: list = []
+
+    if username:
+        where_parts.append('username = ?')
+        params.append(username)
+
     if days is not None:
         period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
         period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        cursor.execute(
-            f'''
-            SELECT message_id, username, posted_at, views, reactions,
-                   ROUND({engagement_expr} * 100, 2) as engagement,
-                   current_message_id
-            FROM messages
-            WHERE posted = TRUE AND posted_at IS NOT NULL
-            AND posted_at >= ? AND posted_at <= ?
-            ORDER BY {engagement_expr} DESC, reactions DESC, views DESC
-            LIMIT ?
-            ''',
-            (period_start.isoformat(), period_end.isoformat(), limit)
-        )
-    else:
-        cursor.execute(
-            f'''
-            SELECT message_id, username, posted_at, views, reactions,
-                   ROUND({engagement_expr} * 100, 2) as engagement,
-                   current_message_id
-            FROM messages
-            WHERE posted = TRUE AND posted_at IS NOT NULL
-            ORDER BY {engagement_expr} DESC, reactions DESC, views DESC
-            LIMIT ?
-            ''',
-            (limit,)
-        )
+        where_parts.append('posted_at >= ?')
+        where_parts.append('posted_at <= ?')
+        params += [period_start.isoformat(), period_end.isoformat()]
+
+    where_clause = ' AND '.join(where_parts)
+    params.append(limit)
+
+    cursor.execute(
+        f'''
+        SELECT message_id, username, posted_at, views, reactions,
+               ROUND({engagement_expr} * 100, 2) as engagement,
+               current_message_id
+        FROM messages
+        WHERE {where_clause}
+        ORDER BY {engagement_expr} DESC, reactions DESC, views DESC
+        LIMIT ?
+        ''',
+        params
+    )
 
     rows = cursor.fetchall()
     conn.close()

@@ -148,7 +148,11 @@ async def handle_source_message(message: types.Message):
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
-    await message.answer("Привет, готов к работе! :)\n Используйте /help - там много интересного.")
+    await message.answer(
+        "Привет! Я бот для автоматического постинга в Telegram-канал.\n\n"
+        "Присылай мне фото, видео или текст — я сохраню их в очередь и опубликую в канал по расписанию.\n\n"
+        "Используй /help чтобы увидеть доступные команды."
+    )
 
 
 @dp.message(Command("help"))
@@ -160,8 +164,10 @@ async def help_command(message: types.Message):
         "/help — список команд\n"
         "/stat — статистика по всем админам за всё время (по умолчанию)\n"
         "/stat <b>&lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
-        "/posts — топ-10 постов по просмотрам за всё время\n"
+        "/posts — топ-10 постов по отклику за всё время\n"
         "/posts <b>&lt;N&gt;</b> — топ-10 постов за последние N дней\n"
+        "/posts <b>&lt;@username&gt;</b> — топ-10 постов конкретного админа\n"
+        "/posts <b>&lt;@username&gt;</b> <b>&lt;N&gt;</b> — топ-10 постов админа за N дней\n"
         "/best — топ-5 админов по отклику (картинка)\n"
         "/best <b>&lt;N&gt;</b> — топ-5 за последние N дней\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
@@ -452,26 +458,28 @@ async def posts_command(message: types.Message):
     logger.info(f"Команда /posts использована пользователем @{message.from_user.username}")
     args = message.text.split()
     days = None
-    if len(args) == 2:
+    username = None
+
+    for arg in args[1:]:
+        arg_clean = arg.lstrip('@')
         try:
-            days = int(args[1])
-            if days <= 0:
+            n = int(arg_clean)
+            if n <= 0:
                 await message.answer("Количество дней должно быть положительным числом")
                 return
+            days = n
         except ValueError:
-            await message.answer("Используйте: /posts или /posts <N>\nПример: /posts 7")
-            return
-    elif len(args) > 2:
-        await message.answer("Используйте: /posts или /posts <N>\nПример: /posts 7")
-        return
+            username = arg_clean
 
-    posts = load_top_posts(days=days)
+    posts = load_top_posts(days=days, username=username)
     if not posts:
         await message.answer("Нет опубликованных постов за выбранный период")
         return
 
     filename = export_top_posts_csv(posts)
     caption = f"🏆 Топ-{len(posts)} постов"
+    if username:
+        caption += f" @{username}"
     if days:
         caption += f" за последние {days} дн."
     else:
