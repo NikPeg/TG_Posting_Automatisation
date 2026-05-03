@@ -223,31 +223,36 @@ def load_top_posts(days: int | None = None, limit: int = 10):
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
 
+    # Сортируем по отклику (reactions / views).
+    # Посты без просмотров идут в конец (engagement = 0), но не отсекаются —
+    # чтобы не терять посты с реакциями при нулевых просмотрах в Telethon-кэше.
+    engagement_expr = 'CASE WHEN views > 0 THEN CAST(reactions AS FLOAT) / views ELSE 0.0 END'
+
     if days is not None:
         period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
         period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
         cursor.execute(
-            '''
+            f'''
             SELECT message_id, username, posted_at, views, reactions,
-                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as engagement,
+                   ROUND({engagement_expr} * 100, 2) as engagement,
                    current_message_id
             FROM messages
             WHERE posted = TRUE AND posted_at IS NOT NULL
             AND posted_at >= ? AND posted_at <= ?
-            ORDER BY views DESC
+            ORDER BY {engagement_expr} DESC, reactions DESC, views DESC
             LIMIT ?
             ''',
             (period_start.isoformat(), period_end.isoformat(), limit)
         )
     else:
         cursor.execute(
-            '''
+            f'''
             SELECT message_id, username, posted_at, views, reactions,
-                   CASE WHEN views > 0 THEN ROUND(CAST(reactions AS FLOAT) / views * 100, 2) ELSE 0.0 END as engagement,
+                   ROUND({engagement_expr} * 100, 2) as engagement,
                    current_message_id
             FROM messages
             WHERE posted = TRUE AND posted_at IS NOT NULL
-            ORDER BY views DESC
+            ORDER BY {engagement_expr} DESC, reactions DESC, views DESC
             LIMIT ?
             ''',
             (limit,)
