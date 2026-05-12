@@ -559,13 +559,14 @@ async def add_admin(message: types.Message):
             await message.answer("Используйте: /addadm @<username>\nПример: /addadm @ivan")
             return
 
-        new_us = args[1][1:]
+        new_us = args[1].lstrip('@')
         if new_us in admin_uns:
             await message.answer("Этот пользователь уже является админом.")
             return
 
+        new_id = await admin_utils.resolve_username_to_id(new_us)
         admin_uns.append(new_us)
-        admin_ids = await admin_utils.resolve_usernames_to_ids(admin_uns)
+        admin_ids.append(new_id)
 
         with open('.env', 'r') as f:
             lines = f.readlines()
