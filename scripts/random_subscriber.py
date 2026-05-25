@@ -19,16 +19,19 @@ load_dotenv()
 
 API_ID = os.getenv("CORE_API_ID")
 API_HASH = os.getenv("CORE_API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 
-if not API_ID or not API_HASH or not CHANNEL_ID:
-    print("Ошибка: убедитесь что CORE_API_ID, CORE_API_HASH и CHANNEL_ID заданы в .env")
+if not API_ID or not API_HASH or not BOT_TOKEN or not CHANNEL_ID:
+    print("Ошибка: убедитесь что CORE_API_ID, CORE_API_HASH, BOT_TOKEN и CHANNEL_ID заданы в .env")
     sys.exit(1)
 
 
 async def main():
-    print("[1] Подключаемся к Telegram...")
-    async with TelegramClient("session", int(API_ID), API_HASH) as client:
+    print("[1] Подключаемся к Telegram через бот-токен...")
+    client = TelegramClient("bot_subscriber_session", int(API_ID), API_HASH)
+    await client.start(bot_token=BOT_TOKEN)
+    async with client:
         print("[2] Подключение установлено. Получаем entity канала...")
         entity = await client.get_entity(CHANNEL_ID)
         print(f"[3] Entity получена: {entity}")
