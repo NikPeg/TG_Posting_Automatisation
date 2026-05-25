@@ -27,16 +27,21 @@ if not API_ID or not API_HASH or not CHANNEL_ID:
 
 
 async def main():
+    print("[1] Подключаемся к Telegram...")
     async with TelegramClient("session", int(API_ID), API_HASH) as client:
+        print("[2] Подключение установлено. Получаем entity канала...")
         entity = await client.get_entity(CHANNEL_ID)
+        print(f"[3] Entity получена: {entity}")
 
         # Число подписчиков из метаданных канала
-        full = await client.get_entity(CHANNEL_ID)
-        total = getattr(full, "participants_count", None)
+        total = getattr(entity, "participants_count", None)
+        print(f"[4] participants_count из entity: {total}")
         if total is None:
+            print("[4a] participants_count не найден, запрашиваем GetFullChannelRequest...")
             from telethon.tl.functions.channels import GetFullChannelRequest
             full_channel = await client(GetFullChannelRequest(entity))
             total = full_channel.full_chat.participants_count
+            print(f"[4b] participants_count из GetFullChannelRequest: {total}")
 
         print(f"Подписчиков в канале: {total}")
 
@@ -44,8 +49,9 @@ async def main():
         participants = []
         offset = 0
         limit = 200
-        print("Загружаем список участников...", end="", flush=True)
+        print("[5] Начинаем загрузку участников...")
         while True:
+            print(f"[5] GetParticipantsRequest offset={offset}...")
             result = await client(GetParticipantsRequest(
                 channel=entity,
                 filter=ChannelParticipantsSearch(""),
@@ -53,14 +59,14 @@ async def main():
                 limit=limit,
                 hash=0,
             ))
+            print(f"[5] Получено: {len(result.users)} пользователей")
             if not result.users:
                 break
             participants.extend(result.users)
             offset += len(result.users)
-            print(".", end="", flush=True)
             if len(result.users) < limit:
                 break
-        print(f" загружено {len(participants)} профилей")
+        print(f"[6] Итого загружено профилей: {len(participants)}")
 
         # Фильтруем: только живые пользователи (не боты, не удалённые)
         real_users = [
