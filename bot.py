@@ -5,6 +5,7 @@ import logging
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.client.session.aiohttp import AiohttpSession
 from telethon import TelegramClient
 import asyncio
 import ssl
@@ -38,7 +39,15 @@ logger = logging.getLogger(__name__)
 load_dotenv(override=True)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_CHAT_ID = int(os.getenv('CHANNEL_ID'))
-bot = Bot(token=BOT_TOKEN)
+PROXY_URL = os.getenv("PROXY_URL", "")
+
+if PROXY_URL:
+    from aiohttp_socks import ProxyConnector
+    _connector = ProxyConnector.from_url(PROXY_URL)
+    _session = AiohttpSession(connector=_connector)
+    bot = Bot(token=BOT_TOKEN, session=_session)
+else:
+    bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 

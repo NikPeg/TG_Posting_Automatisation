@@ -10,7 +10,31 @@ def _make_client():
     api_hash = os.getenv('CORE_API_HASH')
     if not api_id or not api_hash:
         raise RuntimeError("CORE_API_ID or CORE_API_HASH not set in .env")
-    return TelegramClient('session', int(api_id), api_hash)
+    proxy = _parse_proxy()
+    return TelegramClient('session', int(api_id), api_hash, proxy=proxy)
+
+
+def _parse_proxy():
+    """Парсит PROXY_URL в формат для Telethon: (socks.SOCKS5, host, port)."""
+    proxy_url = os.getenv('PROXY_URL', '')
+    if not proxy_url:
+        return None
+    try:
+        import socks
+        from urllib.parse import urlparse
+        parsed = urlparse(proxy_url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+        if 'socks5' in scheme:
+            return (socks.SOCKS5, host, port)
+        elif 'socks4' in scheme:
+            return (socks.SOCKS4, host, port)
+        elif 'http' in scheme:
+            return (socks.HTTP, host, port)
+    except Exception:
+        pass
+    return None
 
 
 async def resolve_usernames_to_ids(usernames):

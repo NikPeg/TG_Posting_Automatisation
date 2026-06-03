@@ -3,3 +3,5 @@ python-dotenv==1.1.1
 aiofiles==23.2.1
 telethon
 matplotlib
+aiohttp-socks
+pysocks
