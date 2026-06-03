@@ -815,9 +815,7 @@ async def group_command(message: types.Message):
 async def main():
     global bot
     if PROXY_URL:
-        from aiohttp_socks import ProxyConnector
-        _connector = ProxyConnector.from_url(PROXY_URL)
-        _session = AiohttpSession(connector=_connector)
+        _session = AiohttpSession(proxy=PROXY_URL)
         bot = Bot(token=BOT_TOKEN, session=_session)
         logger.info(f"Бот использует прокси: {PROXY_URL}")
     else:
