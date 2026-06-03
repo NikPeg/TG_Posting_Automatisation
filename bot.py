@@ -41,13 +41,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_CHAT_ID = int(os.getenv('CHANNEL_ID'))
 PROXY_URL = os.getenv("PROXY_URL", "")
 
-if PROXY_URL:
-    from aiohttp_socks import ProxyConnector
-    _connector = ProxyConnector.from_url(PROXY_URL)
-    _session = AiohttpSession(connector=_connector)
-    bot = Bot(token=BOT_TOKEN, session=_session)
-else:
-    bot = Bot(token=BOT_TOKEN)
+# bot инициализируется в main() — ProxyConnector требует работающий event loop
+bot: Bot = None  # type: ignore
 dp = Dispatcher()
 
 
@@ -818,6 +813,16 @@ async def group_command(message: types.Message):
 
 
 async def main():
+    global bot
+    if PROXY_URL:
+        from aiohttp_socks import ProxyConnector
+        _connector = ProxyConnector.from_url(PROXY_URL)
+        _session = AiohttpSession(connector=_connector)
+        bot = Bot(token=BOT_TOKEN, session=_session)
+        logger.info(f"Бот использует прокси: {PROXY_URL}")
+    else:
+        bot = Bot(token=BOT_TOKEN)
+
     try:
         await ensure_admin_ids()
     except Exception as e:
