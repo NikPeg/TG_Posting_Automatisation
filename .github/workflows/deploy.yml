@@ -42,28 +42,6 @@ jobs:
             fi
             echo "✅ Старые контейнеры удалены"
 
-            echo "=== Убеждаемся что HTTP→SOCKS5 прокси запущен ==="
-            if ! sudo systemctl is-active --quiet http-proxy 2>/dev/null; then
-              echo "Создаём systemd-сервис http-proxy..."
-              sudo tee /etc/systemd/system/http-proxy.service > /dev/null <<EOF
-            [Unit]
-            Description=HTTP to SOCKS5 proxy bridge for docker build
-            After=socks5-tunnel.service
-            Requires=socks5-tunnel.service
-
-            [Service]
-            ExecStart=/usr/bin/python3 $DEPLOY_DIR/scripts/http_proxy.py
-            Restart=always
-            RestartSec=5
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-              sudo systemctl daemon-reload
-              sudo systemctl enable --now http-proxy
-              sleep 3
-            fi
-
             echo "=== Собираем и запускаем контейнер ==="
             sudo docker compose up --build -d
 

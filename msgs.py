@@ -240,8 +240,7 @@ async def collect_message_stats():
         logger.error("CORE_API_ID or CORE_API_HASH not found in .env")
         return
     try:
-        from admin_utils import _parse_proxy
-        async with TelegramClient('session', int(api_id), api_hash, proxy=_parse_proxy()) as client:
+        async with TelegramClient('session', int(api_id), api_hash) as client:
             init_messages_db()
             now = timezone.tz_now()
             # Допущение: лайки и просмотры учитываются только за первые 24 часа после публикации.
