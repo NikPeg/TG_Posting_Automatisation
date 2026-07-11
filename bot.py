@@ -21,13 +21,13 @@ from posting import (
 from adminstat import (
     get_admin_uns,
     get_admin_ids,
+    get_admin_id_by_un,
     load_stat,
     export_admin_stat_csv,
     load_top_posts,
     export_top_posts_csv,
     render_best_admins_image,
-    add_post_to_count,
-    decrement_queued_to_count,
+    drop_legacy_statistics_table,
 )
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -198,16 +198,15 @@ async def post_message(message: types.Message):
         # /post @username — случайный пост от конкретного админа
         if args[1].startswith('@'):
             username = args[1].lstrip('@')
+            admin_id = get_admin_id_by_un(username)
             all_msgs = msgs.load_messages()
-            user_msgs = [m for m in all_msgs if m.get('username') == username]
+            user_msgs = [m for m in all_msgs if m.get('user_id') == admin_id or m.get('username') == username]
             if not user_msgs:
                 await message.answer(f"У @{username} нет сообщений в очереди")
                 return
             chosen = random.choice(user_msgs)
             success, reason = await forward_saved_message(chosen['message_id'], CHANNEL_CHAT_ID)
             if success:
-                add_post_to_count(username)
-                decrement_queued_to_count(username)
                 await message.answer(f"Пост от @{username} опубликован")
             else:
                 await message.answer(f"Не удалось опубликовать пост от @{username}: {reason}")
@@ -622,8 +621,6 @@ async def del_admin(message: types.Message):
                 else:
                     f.write(line)
 
-        from adminstat import delete_admin_from_stat
-        delete_admin_from_stat(username)
         await message.answer(f"Пользователь @{username} лишён прав админа и удалён из статистики.")
 
     except Exception as e:
@@ -822,6 +819,10 @@ async def main():
         await msgs.update_user_ids()
     except Exception as e:
         logger.error(f"Error updating user IDs at database: {e}")
+    try:
+        drop_legacy_statistics_table()
+    except Exception as e:
+        logger.error(f"Error dropping legacy statistics table: {e}")
 
     asyncio.create_task(periodic_post())
     await dp.start_polling(bot)

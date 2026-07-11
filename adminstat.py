@@ -25,6 +25,14 @@ def get_admin_ids():
     return ADMIN_IDS
 
 
+def get_admin_id_by_un(username):
+    return dict(zip(get_admin_uns(), get_admin_ids())).get(username)
+
+
+def get_admin_un_by_id(user_id):
+    return dict(zip(get_admin_ids(), get_admin_uns())).get(user_id)
+
+
 def init_admin_settings():
     conn = sqlite3.connect(STATISTICS_DB)
     cursor = conn.cursor()
@@ -87,26 +95,11 @@ def get_media_group_mode(admin) -> bool:
     return bool(row[0])
 
 
-def init_statistics_db():
+def drop_legacy_statistics_table():
+    """Миграция: таблица statistics больше не используется — статистика
+    считается напрямую из messages по списку админов из .env"""
     conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS statistics (
-            username TEXT PRIMARY KEY,
-            postcount INTEGER DEFAULT 0,
-            queuedcount INTEGER DEFAULT 0,
-            viewstotal INTEGER DEFAULT 0,
-            reactionstotal INTEGER DEFAULT 0
-        )
-    ''')
-    cursor.execute(f'ATTACH DATABASE "{MESSAGES_DB}" AS messages')
-    admins = get_admin_uns()
-    for admin in admins:
-        cursor.execute('SELECT COUNT(*) FROM messages WHERE username = ? AND posted = 1', (admin,))
-        postcount = cursor.fetchone()[0]
-        cursor.execute('SELECT COUNT(*) FROM messages WHERE username = ? AND posted = 0', (admin,))
-        queuedcount = cursor.fetchone()[0]
-        cursor.execute('INSERT OR REPLACE INTO statistics (username, postcount, queuedcount, viewstotal, reactionstotal) VALUES (?, ?, ?, 0, 0)', (admin, postcount, queuedcount))
+    conn.execute('DROP TABLE IF EXISTS statistics')
     conn.commit()
     conn.close()
 
@@ -139,67 +132,44 @@ def export_admin_stat_csv(stat):
 
 
 def load_stat(days: int | None = None):
-    init_statistics_db()
+    where = 'posted = TRUE'
+    params: list = []
 
-    if days is None:
-        update_views_reactions_count()
-        conn = sqlite3.connect(STATISTICS_DB)
-        cursor = conn.cursor()
-        cursor.execute('SELECT username, postcount, queuedcount, viewstotal, reactionstotal FROM statistics')
-        rows = cursor.fetchall()
-        conn.close()
-        return [{'username': row[0], 'postcount': row[1], 'queuedcount': row[2], 'viewstotal': row[3], 'reactionstotal': row[4], 'engagement': round((row[4] / row[3] * 100), 2) if row[3] > 0 else 0} for row in rows]
+    if days is not None:
+        if days <= 0:
+            days = 1
+        now = timezone.tz_now()
+        period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+        period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        where += ' AND posted_at IS NOT NULL AND posted_at >= ? AND posted_at <= ?'
+        params = [period_start.isoformat(), period_end.isoformat()]
 
-    if days <= 0:
-        days = 1
-
-    now = timezone.tz_now()
-    period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
-    period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-
-    stat_conn = sqlite3.connect(STATISTICS_DB)
-    msg_conn = sqlite3.connect(MESSAGES_DB)
-    stat_conn.row_factory = sqlite3.Row
-
-    cursor = stat_conn.cursor()
-    cursor.execute('SELECT username FROM statistics')
-    all_admins = [row[0] for row in cursor.fetchall()]
-    stat_conn.close()
-
-    cursor = msg_conn.cursor()
+    conn = sqlite3.connect(MESSAGES_DB)
+    cursor = conn.cursor()
     cursor.execute(
-        '''
+        f'''
         SELECT
-            m.username,
+            user_id,
             COUNT(*) as postcount,
-            COALESCE(SUM(m.views), 0) as viewstotal,
-            COALESCE(SUM(m.reactions), 0) as reactionstotal
-        FROM messages m
-        WHERE m.posted = TRUE
-        AND m.posted_at IS NOT NULL
-        AND m.posted_at >= ?
-        AND m.posted_at <= ?
-        GROUP BY m.username
+            COALESCE(SUM(views), 0) as viewstotal,
+            COALESCE(SUM(reactions), 0) as reactionstotal
+        FROM messages
+        WHERE {where}
+        GROUP BY user_id
         ''',
-        (period_start.isoformat(), period_end.isoformat())
+        params
     )
-    period_rows = {row[0]: row for row in cursor.fetchall()}
+    posted_rows = {row[0]: row for row in cursor.fetchall()}
+
+    cursor.execute('SELECT user_id, COUNT(*) FROM messages WHERE posted = FALSE GROUP BY user_id')
+    queued_rows = dict(cursor.fetchall())
+    conn.close()
 
     result = []
-    for username in all_admins:
-        if username in period_rows:
-            row = period_rows[username]
-            postcount, viewstotal, reactionstotal = row[1], row[2], row[3]
-        else:
-            postcount, viewstotal, reactionstotal = 0, 0, 0
-
-        queued_cursor = msg_conn.cursor()
-        queued_cursor.execute(
-            'SELECT COUNT(*) FROM messages WHERE username = ? AND posted = FALSE',
-            (username,)
-        )
-        queuedcount = queued_cursor.fetchone()[0]
-
+    for username, user_id in zip(get_admin_uns(), get_admin_ids()):
+        row = posted_rows.get(user_id)
+        postcount, viewstotal, reactionstotal = (row[1], row[2], row[3]) if row else (0, 0, 0)
+        queuedcount = queued_rows.get(user_id, 0)
         rate = round(reactionstotal / viewstotal * 100, 2) if viewstotal > 0 else 0.0
         result.append({
             'username': username,
@@ -209,9 +179,7 @@ def load_stat(days: int | None = None):
             'reactionstotal': reactionstotal,
             'engagement': rate,
         })
-
-    msg_conn.close()
-    return result  
+    return result
 
 def load_top_posts(days: int | None = None, limit: int = 10, username: str | None = None):
     load_dotenv(override=True)
@@ -232,8 +200,13 @@ def load_top_posts(days: int | None = None, limit: int = 10, username: str | Non
     params: list = []
 
     if username:
-        where_parts.append('username = ?')
-        params.append(username)
+        admin_id = get_admin_id_by_un(username)
+        if admin_id is not None:
+            where_parts.append('user_id = ?')
+            params.append(admin_id)
+        else:
+            where_parts.append('username = ?')
+            params.append(username)
 
     if days is not None:
         period_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
@@ -249,7 +222,7 @@ def load_top_posts(days: int | None = None, limit: int = 10, username: str | Non
         f'''
         SELECT message_id, username, posted_at, views, reactions,
                ROUND({engagement_expr} * 100, 2) as engagement,
-               current_message_id
+               current_message_id, user_id
         FROM messages
         WHERE {where_clause}
         ORDER BY {engagement_expr} DESC, reactions DESC, views DESC
@@ -260,10 +233,11 @@ def load_top_posts(days: int | None = None, limit: int = 10, username: str | Non
 
     rows = cursor.fetchall()
     conn.close()
+    un_by_id = dict(zip(get_admin_ids(), get_admin_uns()))
     return [
         {
             'message_id': row[0],
-            'username': row[1],
+            'username': row[1] or un_by_id.get(row[7]),
             'posted_at': row[2],
             'views': row[3],
             'reactions': row[4],
@@ -357,80 +331,3 @@ def render_best_admins_image(stat: list, days: int | None = None) -> io.BytesIO:
     return buf
 
 
-def save_stat(stat):
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    for item in stat:
-        cursor.execute('INSERT OR REPLACE INTO statistics (username, postcount, queuedcount) VALUES (?, ?, ?)',
-                       (item['username'], item['postcount'], item.get('queuedcount', 0)))
-    conn.commit()
-    conn.close()
-
-
-def add_post_to_count(admin):
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE statistics SET postcount = postcount + 1 WHERE username = ?', (admin,))
-    conn.commit()
-    conn.close()
-
-
-def add_queued_to_count(admin):
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE statistics SET queuedcount = queuedcount + 1 WHERE username = ?', (admin,))
-    conn.commit()
-    conn.close()
-
-
-def delete_admin_from_stat(username: str):
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM statistics WHERE username = ?', (username,))
-    conn.commit()
-    conn.close()
-    logger.info(f"Админ @{username} удалён из статистики")
-
-
-def decrement_queued_to_count(admin):
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE statistics SET queuedcount = queuedcount - 1 WHERE username = ? AND queuedcount > 0', (admin,))
-    conn.commit()
-    conn.close()
-
-def update_views_reactions_count():
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute(f'ATTACH DATABASE "{MESSAGES_DB}" AS messages')
-    cursor.execute('''
-        UPDATE statistics
-        SET
-        viewstotal = COALESCE((
-            SELECT SUM(m.views)
-            FROM messages.messages m
-            WHERE m.username = statistics.username
-        ), 0),
-        reactionstotal = COALESCE((
-            SELECT SUM(m.reactions)
-            FROM messages.messages m
-            WHERE m.username = statistics.username
-        ), 0)
-    ''')
-    conn.commit()
-    conn.close()
-
-
-def reset_statistics():
-    init_statistics_db()
-    conn = sqlite3.connect(STATISTICS_DB)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE statistics SET postcount = 0, queuedcount = 0')
-    conn.commit()
-    conn.close()

@@ -19,12 +19,9 @@ def remove_admin(username: str):
     username = username.lstrip('@')
     print(f"Удаляю @{username} из всех баз данных...\n")
 
-    # --- statistics.db ---
+    # --- statistics.db (осталась только таблица admin_settings) ---
     conn = sqlite3.connect(STATISTICS_DB)
     cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM statistics WHERE username = ?", (username,))
-    print(f"statistics:      удалено строк: {cursor.rowcount}")
 
     cursor.execute("DELETE FROM admin_settings WHERE username = ?", (username,))
     print(f"admin_settings:  удалено строк: {cursor.rowcount}")

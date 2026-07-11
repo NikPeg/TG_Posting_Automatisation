@@ -16,8 +16,6 @@ WEEKDAY_EN = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'
 from adminstat import (
     get_admin_ids,
     get_admin_uns,
-    add_post_to_count,
-    decrement_queued_to_count,
 )
 
 load_dotenv(override=True)
@@ -276,8 +274,6 @@ async def post_random():
         msg = random.choice(msg_from_adm)
         success, reason = await post(msg['message_id'])
         if success:
-            add_post_to_count(msg['username'])
-            decrement_queued_to_count(msg['username'])
             return True
         else:
             logger.warning(f"Не удалось опубликовать пост {msg['message_id']} от админа {rand_adm}: {reason}. Пробуем следующего")

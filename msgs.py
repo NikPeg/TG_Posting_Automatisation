@@ -192,22 +192,23 @@ def save_message_to_db(message: types.Message):
         mgid = f' - медиа группа {media_group_id}'
     else: media_group_id = None; mgid = ''
 
+    # Если админ скрыл свой @username, берём ник из ADMIN_UNS по id
+    username = message.from_user.username or adminstat.get_admin_un_by_id(message.from_user.id)
+
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
     is_forwarded_from_channel = message.forward_origin is not None and hasattr(message.forward_origin, 'chat') and message.forward_origin.chat.type in ['channel']
     cursor.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?)',
-                   (message.message_id, message.chat.id, message.from_user.username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday))
+                   (message.message_id, message.chat.id, username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday))
     conn.commit()
     conn.close()
 
-    if message.from_user and message.from_user.username:
-        adminstat.add_queued_to_count(message.from_user.id)
-        logger.info(f"Сообщение {message.message_id}{mgid} сохранено в базу данных от пользователя {message.from_user.username}")
+    logger.info(f"Сообщение {message.message_id}{mgid} сохранено в базу данных от пользователя {username or message.from_user.id}")
 
     return {
         'message_id': message.message_id,
         'chat_id': message.chat.id,
-        'username': message.from_user.username,
+        'username': username,
         'user_id': message.from_user.id,
         'posted': False,
         'is_forwarded_from_channel': is_forwarded_from_channel,
@@ -305,7 +306,14 @@ async def update_user_ids():
         cursor = conn.cursor()
         
         cursor.executemany("UPDATE messages SET user_id = ? WHERE username = ?", data_to_update)
-        
+
+        # Обратный бэкфилл: проставляем ник по user_id для сообщений админов,
+        # скрывших свой @username (у них username сохранился как NULL)
+        cursor.executemany(
+            "UPDATE messages SET username = ? WHERE user_id = ? AND username IS NULL",
+            [(username, user_id) for user_id, username in data_to_update]
+        )
+
         conn.commit()
         logger.info(f"Успешно обновлено типов пользователей: {len(data_to_update)}")
         
