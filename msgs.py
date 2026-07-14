@@ -47,6 +47,10 @@ def init_messages_db():
         cursor.execute('ALTER TABLE messages ADD COLUMN weekday TEXT DEFAULT NULL')
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute('ALTER TABLE messages ADD COLUMN is_poll BOOLEAN DEFAULT FALSE')
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -102,20 +106,20 @@ def load_messages():
     init_messages_db()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
-    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday FROM messages WHERE posted = FALSE')
+    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday, is_poll FROM messages WHERE posted = FALSE')
     rows = cursor.fetchall()
     conn.close()
-    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11]} for row in rows]
+    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11], 'is_poll': bool(row[12])} for row in rows]
 
 
 def load_all_messages():
     init_messages_db()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
-    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday FROM messages')
+    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday, is_poll FROM messages')
     rows = cursor.fetchall()
     conn.close()
-    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11]} for row in rows]
+    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11], 'is_poll': bool(row[12])} for row in rows]
 
 
 def save_messages(messages):
@@ -198,8 +202,9 @@ def save_message_to_db(message: types.Message):
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
     is_forwarded_from_channel = message.forward_origin is not None and hasattr(message.forward_origin, 'chat') and message.forward_origin.chat.type in ['channel']
-    cursor.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?)',
-                   (message.message_id, message.chat.id, username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday))
+    is_poll = message.poll is not None
+    cursor.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday, is_poll) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?)',
+                   (message.message_id, message.chat.id, username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday, is_poll))
     conn.commit()
     conn.close()
 
@@ -216,6 +221,7 @@ def save_message_to_db(message: types.Message):
         'reactions': 0,
         'media_group': media_group_id,
         'weekday': weekday,
+        'is_poll': is_poll,
     }
 
 

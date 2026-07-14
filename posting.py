@@ -94,7 +94,7 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
             if msg.get('user_id') not in bots:
                 try:
                     from bot import bot
-                    if msg.get('is_forwarded_from_channel', True):
+                    if msg.get('is_forwarded_from_channel', True) and not msg.get('is_poll'):
                         forwarded_msg = await bot.forward_messages(
                             chat_id=target_chat_id,
                             from_chat_id=msg['chat_id'],
@@ -127,7 +127,7 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                 named_bot_ok = False
                 named_bot_fail_reason = None
                 try:
-                    if msg.get('is_forwarded_from_channel', True):
+                    if msg.get('is_forwarded_from_channel', True) and not msg.get('is_poll'):
                         method = "forwardMessages"
                     else:
                         method = "copyMessages"
@@ -182,7 +182,7 @@ async def forward_saved_message(target_message_id: int, target_chat_id: int):
                 )
                 try:
                     from bot import bot
-                    if msg.get('is_forwarded_from_channel', True):
+                    if msg.get('is_forwarded_from_channel', True) and not msg.get('is_poll'):
                         forwarded_msg = await bot.forward_messages(
                             chat_id=target_chat_id,
                             from_chat_id=msg['chat_id'],
