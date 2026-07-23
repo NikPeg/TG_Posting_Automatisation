@@ -195,7 +195,7 @@ async def post_message(message: types.Message):
                 await message.answer("Не удалось опубликовать пост — нет доступных сообщений")
             return
 
-        # /post @username — случайный пост от конкретного админа
+        # /post @username [<message_id>] — пост от конкретного админа
         if args[1].startswith('@'):
             username = args[1].lstrip('@')
             admin_id = get_admin_id_by_un(username)
@@ -204,6 +204,20 @@ async def post_message(message: types.Message):
             if not user_msgs:
                 await message.answer(f"У @{username} нет сообщений в очереди")
                 return
+
+            # /post @username <message_id> — конкретный пост этого админа (для проверки именного бота)
+            if len(args) >= 3:
+                target_id = int(args[2])
+                if not any(m['message_id'] == target_id for m in user_msgs):
+                    await message.answer(f"У @{username} нет сообщения {target_id} в очереди")
+                    return
+                success, reason = await forward_saved_message(target_id, CHANNEL_CHAT_ID)
+                if success:
+                    await message.answer(f"Сообщение {target_id} от @{username} опубликовано")
+                else:
+                    await message.answer(f"Не удалось опубликовать сообщение {target_id} от @{username}: {reason}")
+                return
+
             chosen = random.choice(user_msgs)
             success, reason = await forward_saved_message(chosen['message_id'], CHANNEL_CHAT_ID)
             if success:
@@ -221,7 +235,7 @@ async def post_message(message: types.Message):
             await message.answer(f"Не удалось переслать сообщение {message_id}: {reason}")
 
     except ValueError:
-        await message.answer("Используйте:\n/post — случайный пост прямо сейчас\n/post @username — пост от конкретного админа\n/post <id> — пост по ID")
+        await message.answer("Используйте:\n/post — случайный пост прямо сейчас\n/post @username — пост от конкретного админа\n/post @username <id> — конкретный пост этого админа\n/post <id> — пост по ID")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
