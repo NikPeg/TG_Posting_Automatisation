@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import timezone
 import csv
 import io
+from contextlib import closing
 
 STATISTICS_DB = "statistics.db"
 MESSAGES_DB = "messages.db"
@@ -47,6 +48,9 @@ def init_admin_settings():
         cursor.execute('ALTER TABLE admin_settings ADD COLUMN weekday TEXT DEFAULT NULL')
     except sqlite3.OperationalError:
         pass
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(admin_settings)')}
+    if 'duplicates_allowed' not in columns:
+        conn.execute('ALTER TABLE admin_settings ADD COLUMN duplicates_allowed BOOLEAN DEFAULT NULL')
     conn.commit()
     conn.close()
 
@@ -55,7 +59,9 @@ def set_media_group_mode(admin, mode: bool):
     init_admin_settings()
     conn = sqlite3.connect(STATISTICS_DB)
     cursor = conn.cursor()
-    cursor.execute('INSERT OR REPLACE INTO admin_settings (username, media_group_mode) VALUES (?, ?)', (admin, int(mode)))
+    cursor.execute('INSERT INTO admin_settings (username, media_group_mode) VALUES (?, ?) '
+                   'ON CONFLICT(username) DO UPDATE SET media_group_mode=excluded.media_group_mode',
+                   (admin, int(mode)))
     conn.commit()
     conn.close()
 
@@ -93,6 +99,25 @@ def get_media_group_mode(admin) -> bool:
     if row is None: #вкл по умолч
         return True
     return bool(row[0])
+
+
+def duplicates_allowed(admin, general_admin_id):
+    init_admin_settings()
+    with closing(sqlite3.connect(STATISTICS_DB)) as conn:
+        row = conn.execute('SELECT duplicates_allowed FROM admin_settings WHERE username=?', (admin,)).fetchone()
+    return bool(row[0]) if row and row[0] is not None else admin == general_admin_id
+
+
+def toggle_duplicates(admin, general_admin_id):
+    init_admin_settings()
+    with closing(sqlite3.connect(STATISTICS_DB)) as conn, conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT duplicates_allowed FROM admin_settings WHERE username=?', (admin,)).fetchone()
+        current = bool(row[0]) if row and row[0] is not None else admin == general_admin_id
+        conn.execute('INSERT INTO admin_settings (username, duplicates_allowed) VALUES (?, ?) '
+                     'ON CONFLICT(username) DO UPDATE SET duplicates_allowed=excluded.duplicates_allowed',
+                     (admin, int(not current)))
+    return not current
 
 
 def drop_legacy_statistics_table():

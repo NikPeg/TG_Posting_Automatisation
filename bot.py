@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from time import monotonic
 
 import msgs
+import image_dedup
 import admin_utils
 import timezone
 from posting import (
@@ -31,6 +32,9 @@ from adminstat import (
     export_top_posts_csv,
     render_best_admins_image,
     drop_legacy_statistics_table,
+    duplicates_allowed,
+    toggle_duplicates,
+    init_admin_settings,
 )
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -61,6 +65,59 @@ class PendingClear:
 
 
 pending_clears = {}
+image_check_lock = asyncio.Lock()
+
+
+def duplicate_image_notice(match, actor_id):
+    author = '@' + match['username'] if match['username'] else str(match['user_id'])
+    if match['posted']:
+        channel = str(match['publication_channel_id'] or CHANNEL_CHAT_ID)
+        target = channel[4:] if channel.startswith('-100') else channel.lstrip('-')
+        location = f"https://t.me/c/{target}/{match['current_message_id']}"
+        return f'Эта картинка уже опубликована в канале. Повтор не добавлен в отложку.\n{location}'
+    if match['user_id'] == actor_id:
+        return f"Эта картинка уже есть в твоей отложке — сообщение №{match['message_id']}. Повтор не сохранён."
+    return f"Эта картинка уже в отложке у {author}. Повтор не добавлен."
+
+
+async def save_checked_image(message, photo):
+    # Serialize check + save across all admins, including concurrent album updates.
+    async with image_check_lock:
+        try:
+            settings = image_dedup.Settings.from_env()
+            await asyncio.to_thread(msgs.init_messages_db)
+            history = image_dedup.ImageHistory(msgs.MESSAGES_DB, settings)
+            match = await asyncio.to_thread(history.find, unique_id=photo.file_unique_id)
+            allowed = await asyncio.to_thread(duplicates_allowed, message.from_user.id, get_admin_ids()[0])
+            if match is not None and not allowed:
+                await message.answer(duplicate_image_notice(match, message.from_user.id))
+                return None
+            if match is not None:
+                # Reuse known pixels for permitted repeats, without downloading again.
+                fingerprint = image_dedup.Fingerprint(
+                    match['content_hash'], int(match['image_phash'], 16),
+                    int(match['image_dhash'], 16), match['image_rgb'],
+                )
+            else:
+                if photo.file_size and photo.file_size > settings.download_bytes:
+                    raise image_dedup.ImageCheckError('Картинка превышает лимит загрузки')
+                with image_dedup.BoundedDownload(settings.download_bytes) as output:
+                    await bot.download(photo.file_id, destination=output)
+                    fingerprint = await asyncio.to_thread(image_dedup.prepare, output.getvalue(), settings)
+                if not allowed:
+                    match = await asyncio.to_thread(history.find, fingerprint=fingerprint)
+                    if match is not None:
+                        await message.answer(duplicate_image_notice(match, message.from_user.id))
+                        return None
+            return await asyncio.to_thread(
+                msgs.save_message_to_db, message, (photo.file_unique_id, fingerprint)
+            )
+        except image_dedup.ImageCheckError as exc:
+            await message.answer(f'{exc}. Картинка не добавлена в отложку.')
+        except Exception:
+            logger.exception('Не удалось проверить картинку chat=%s message=%s', message.chat.id, message.message_id)
+            await message.answer('Не удалось проверить картинку на дубли. Она не добавлена в отложку; попробуйте позже.')
+        return None
 
 
 def clear_request_key(message):
@@ -221,7 +278,17 @@ async def normalize_bot_mappings():
 @dp.message(lambda message: message.photo or message.document or message.video or message.audio or message.sticker or message.poll or (message.text and not message.text.startswith('/')))
 @admin_required
 async def handle_source_message(message: types.Message):
-    message_data = msgs.save_message_to_db(message)
+    photo = message.photo[-1] if message.photo else None
+    if photo is None and message.document and (message.document.mime_type or '').startswith('image/'):
+        # Animations remain outside the static-image checker.
+        if message.document.mime_type != 'image/gif':
+            photo = message.document
+    if photo is not None:
+        message_data = await save_checked_image(message, photo)
+        if message_data is None:
+            return
+    else:
+        message_data = msgs.save_message_to_db(message)
     weekday = message_data.get('weekday')
     weekday_note = ""
     if weekday:
@@ -261,6 +328,7 @@ async def help_command(message: types.Message):
         "/clear — очистить свою отложку с подтверждением\n"
         "/clear <b>&lt;@username&gt;</b> — очистить отложку админа (только главный админ)\n"
         "/cancel — отменить запрос на очистку\n"
+        "/duplicates <b>&lt;@username&gt;</b> — переключить разрешение повторов (только главный админ)\n"
         "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n"
         "/weekday — показать текущий день публикации\n"
         "/weekday <b>&lt;день&gt;</b> — публиковать только в этот день (monday…sunday)\n"
@@ -688,6 +756,26 @@ async def messages_command(message: types.Message):
     os.remove(filename)
 
 
+@dp.message(Command("duplicates"))
+@general_admin_required
+async def duplicates_command(message: types.Message):
+    args = message.text.split()
+    if len(args) != 2 or not args[1].lstrip('@'):
+        await message.answer('Используйте: /duplicates @username')
+        return
+    requested = args[1].lstrip('@').casefold()
+    admins = list(zip(get_admin_uns(), get_admin_ids()))
+    target = next(((name, uid) for name, uid in admins if name.casefold() == requested), None)
+    if target is None:
+        await message.answer('Этот пользователь не входит в список администраторов.')
+        return
+    name, user_id = target
+    async with image_check_lock:
+        allowed = await asyncio.to_thread(toggle_duplicates, user_id, get_admin_ids()[0])
+    status = 'разрешены' if allowed else 'запрещены'
+    await message.answer(f'Повторные картинки для @{name} теперь {status}.')
+
+
 @dp.message(Command("addadm"))
 @general_admin_required
 async def add_admin(message: types.Message):
@@ -948,6 +1036,8 @@ async def group_command(message: types.Message):
 
 
 async def main():
+    msgs.init_messages_db()
+    init_admin_settings()
     try:
         await ensure_admin_ids()
     except Exception as e:

@@ -1,4 +1,5 @@
 import sqlite3
+import image_dedup
 import logging
 from aiogram import types
 import os
@@ -52,6 +53,7 @@ def init_messages_db():
         cursor.execute('ALTER TABLE messages ADD COLUMN is_poll BOOLEAN DEFAULT FALSE')
     except sqlite3.OperationalError:
         pass
+    image_dedup.init_schema(conn)
     conn.commit()
     conn.close()
 
@@ -107,20 +109,20 @@ def load_messages():
     init_messages_db()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
-    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday, is_poll FROM messages WHERE posted = FALSE')
+    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday, is_poll, content_hash FROM messages WHERE posted = FALSE')
     rows = cursor.fetchall()
     conn.close()
-    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11], 'is_poll': bool(row[12])} for row in rows]
+    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11], 'is_poll': bool(row[12]), 'content_hash': row[13]} for row in rows]
 
 
 def load_all_messages():
     init_messages_db()
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
-    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday, is_poll FROM messages')
+    cursor.execute('SELECT message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group, posted_at, weekday, is_poll, content_hash FROM messages')
     rows = cursor.fetchall()
     conn.close()
-    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11], 'is_poll': bool(row[12])} for row in rows]
+    return [{'message_id': row[0], 'chat_id': row[1], 'username': row[2], 'user_id': row[3], 'current_message_id': row[4], 'posted': bool(row[5]), 'is_forwarded_from_channel': bool(row[6]), 'views': row[7], 'reactions': row[8], 'media_group': row[9], 'posted_at': row[10], 'weekday': row[11], 'is_poll': bool(row[12]), 'content_hash': row[13]} for row in rows]
 
 
 def save_messages(messages):
@@ -128,7 +130,11 @@ def save_messages(messages):
     conn = sqlite3.connect(MESSAGES_DB)
     cursor = conn.cursor()
     for msg in messages:
-        cursor.execute('INSERT OR REPLACE INTO messages (message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        cursor.execute('''INSERT INTO messages (message_id, chat_id, username, user_id, current_message_id, posted, is_forwarded_from_channel, views, reactions, media_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_id, chat_id) DO UPDATE SET
+            username=excluded.username, user_id=excluded.user_id, current_message_id=excluded.current_message_id,
+            posted=excluded.posted, is_forwarded_from_channel=excluded.is_forwarded_from_channel,
+            views=excluded.views, reactions=excluded.reactions, media_group=excluded.media_group''',
                        (msg['message_id'], msg['chat_id'], msg['username'], msg.get('user_id'), msg.get('current_message_id'), msg.get('posted', False), msg.get('is_forwarded_from_channel', False), msg.get('views', 0), msg.get('reactions', 0), msg.get('media_group', None)))
     conn.commit()
     conn.close()
@@ -198,7 +204,7 @@ WEEKDAY_NAMES_RU_ACCUSATIVE = {
 }
 
 
-def save_message_to_db(message: types.Message):
+def save_message_to_db(message: types.Message, image_check=None):
     init_messages_db()
 
     weekday = adminstat.get_weekday_mode(message.from_user.id)
@@ -212,14 +218,14 @@ def save_message_to_db(message: types.Message):
     # Если админ скрыл свой @username, берём ник из ADMIN_UNS по id
     username = message.from_user.username or adminstat.get_admin_un_by_id(message.from_user.id)
 
-    conn = sqlite3.connect(MESSAGES_DB)
-    cursor = conn.cursor()
     is_forwarded_from_channel = message.forward_origin is not None and hasattr(message.forward_origin, 'chat') and message.forward_origin.chat.type in ['channel']
     is_poll = message.poll is not None
-    cursor.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday, is_poll) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?)',
-                   (message.message_id, message.chat.id, username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday, is_poll))
-    conn.commit()
-    conn.close()
+    with closing(sqlite3.connect(MESSAGES_DB)) as conn, conn:
+        cursor = conn.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday, is_poll) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?)',
+                       (message.message_id, message.chat.id, username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday, is_poll))
+        if image_check is not None and cursor.rowcount:
+            unique_id, fingerprint = image_check
+            image_dedup.store(conn, message, unique_id, fingerprint)
 
     logger.info(f"Сообщение {message.message_id}{mgid} сохранено в базу данных от пользователя {username or message.from_user.id}")
 
@@ -235,6 +241,7 @@ def save_message_to_db(message: types.Message):
         'media_group': media_group_id,
         'weekday': weekday,
         'is_poll': is_poll,
+        'content_hash': image_check[1].content_hash if image_check else None,
     }
 
 
@@ -245,6 +252,8 @@ def update_message_posted(message_id, chat_id, current_message_id):
     cursor.execute(
     'UPDATE messages SET current_message_id = ?, posted = TRUE, posted_at = ? WHERE message_id = ? AND chat_id = ?',
         (current_message_id, timezone.tz_now().isoformat(), message_id, chat_id))
+    conn.execute('UPDATE messages SET publication_channel_id=? WHERE message_id=? AND chat_id=?',
+                 (os.getenv('CHANNEL_ID'), message_id, chat_id))
     conn.commit()
     conn.close()
     logger.info(f'Сообщение {message_id} обновлено как опубликованное с новым ID {current_message_id}')
