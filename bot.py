@@ -9,6 +9,8 @@ from telethon import TelegramClient
 import asyncio
 import ssl
 import certifi
+from dataclasses import dataclass
+from time import monotonic
 
 import msgs
 import admin_utils
@@ -17,6 +19,7 @@ from posting import (
     forward_saved_message,
     periodic_post,
     post_random,
+    publication_lock,
 )
 from adminstat import (
     get_admin_uns,
@@ -41,6 +44,89 @@ CHANNEL_CHAT_ID = int(os.getenv('CHANNEL_ID'))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+CLEAR_CONFIRMATION = "да, я подтверждаю"
+CLEAR_CONFIRMATION_TTL = 120
+CLEAR_EXPIRED_MESSAGE = "Время подтверждения истекло. Очистка отменена, бот работает в обычном режиме."
+
+
+@dataclass
+class PendingClear:
+    target_id: int
+    target_name: str
+    message_keys: list
+    expires_at: float
+    request_message_id: int
+    timeout_task: asyncio.Task | None = None
+
+
+pending_clears = {}
+
+
+def clear_request_key(message):
+    return (message.chat.id, message.from_user.id)
+
+
+def take_pending_clear(key):
+    request = pending_clears.pop(key, None)
+    if request is not None and request.timeout_task is not None:
+        request.timeout_task.cancel()
+    return request
+
+
+async def expire_clear_request(message, request):
+    await asyncio.sleep(max(0, request.expires_at - monotonic()))
+    key = clear_request_key(message)
+    # Старый таймер не должен отменить новый запрос или прислать лишнее уведомление.
+    if pending_clears.get(key) is not request:
+        return
+    pending_clears.pop(key)
+    try:
+        await message.answer(CLEAR_EXPIRED_MESSAGE)
+    except Exception:
+        logger.exception("Не удалось отправить уведомление об истечении подтверждения actor=%s", key[1])
+
+
+def can_clear_queue(actor_id, target_id):
+    ids = get_admin_ids()
+    return actor_id in ids and target_id in ids and (actor_id == target_id or actor_id == ids[0])
+
+
+# Регистрируется до обработчика контента: подтверждение не должно стать постом.
+@dp.message(lambda message: message.text and message.text.strip().casefold() == CLEAR_CONFIRMATION)
+async def confirm_clear(message: types.Message):
+    key = clear_request_key(message)
+    request = take_pending_clear(key)
+    if request is None:
+        await message.answer("Нет запроса на очистку. Сначала используйте /clear.")
+        return
+    if message.message_id <= request.request_message_id or monotonic() >= request.expires_at:
+        await message.answer("Подтверждение устарело. Повторите /clear.")
+        return
+
+    try:
+        async with publication_lock:
+            if monotonic() >= request.expires_at:
+                await message.answer("Подтверждение устарело. Повторите /clear.")
+                return
+            if not can_clear_queue(message.from_user.id, request.target_id):
+                await message.answer("Очистка отменена: права администраторов изменились.")
+                return
+            deleted = msgs.clear_queued_messages(request.target_id, request.message_keys)
+        logger.info("Очистка очереди: actor=%s target=%s deleted=%s", message.from_user.id, request.target_id, deleted)
+        await message.answer(
+            f"Отложка {request.target_name} очищена. Удалено сообщений: {deleted}.\n"
+            "Опубликованные посты и сообщения, добавленные после запроса, сохранены."
+        )
+    except Exception:
+        logger.exception("Ошибка очистки очереди target=%s", request.target_id)
+        await message.answer("Не удалось очистить отложку. Повторите /clear.")
+
+
+@dp.message(Command("cancel"))
+async def cancel_clear(message: types.Message):
+    request = take_pending_clear(clear_request_key(message))
+    await message.answer("Запрос на очистку отменён." if request else "Нет запроса на очистку.")
 
 
 def admin_required(func):
@@ -172,6 +258,9 @@ async def help_command(message: types.Message):
         "/best — топ-5 админов по отклику (картинка)\n"
         "/best <b>&lt;N&gt;</b> — топ-5 за последние N дней\n"
         "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
+        "/clear — очистить свою отложку с подтверждением\n"
+        "/clear <b>&lt;@username&gt;</b> — очистить отложку админа (только главный админ)\n"
+        "/cancel — отменить запрос на очистку\n"
         "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n"
         "/weekday — показать текущий день публикации\n"
         "/weekday <b>&lt;день&gt;</b> — публиковать только в этот день (monday…sunday)\n"
@@ -433,14 +522,52 @@ async def config_command(message: types.Message):
 
 
 @dp.message(Command("clear"))
-@general_admin_required
+@admin_required
 async def clear_message(message: types.Message):
     logger.info(f"Команда /clear использована пользователем @{message.from_user.username}")
+    key = clear_request_key(message)
+    # Любой новый /clear заменяет предыдущий запрос, даже если аргументы ошибочны.
+    take_pending_clear(key)
     try:
-        msgs.clear_messages()
-        await message.answer(f"База данных очищена")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        args = message.text.split()
+        if len(args) > 2:
+            await message.answer("Используйте /clear или /clear @username (только главный админ).")
+            return
+        actor_id = message.from_user.id
+        ids = get_admin_ids()
+        names = get_admin_uns()
+        target_id = actor_id
+        if len(args) == 2:
+            if actor_id != ids[0]:
+                await message.answer("Указывать username может только главный админ. Для своей отложки используйте /clear.")
+                return
+            username = args[1].lstrip('@').casefold()
+            targets = [uid for name, uid in zip(names, ids) if name.casefold() == username and username]
+            if len(targets) != 1:
+                await message.answer("Админ с таким username не найден однозначно. Проверьте /config.")
+                return
+            target_id = targets[0]
+        if not can_clear_queue(actor_id, target_id):
+            await message.answer("Недостаточно прав для очистки этой отложки.")
+            return
+        target_name = next((f"@{name}" for name, uid in zip(names, ids) if uid == target_id and name), f"ID {target_id}")
+        message_keys = msgs.get_queued_message_keys(target_id)
+        if not message_keys:
+            await message.answer(f"Отложка {target_name} уже пуста.")
+            return
+        request = PendingClear(target_id, target_name, message_keys, monotonic() + CLEAR_CONFIRMATION_TTL, message.message_id)
+        pending_clears[key] = request
+        request.timeout_task = asyncio.create_task(expire_clear_request(message, request))
+        await message.answer(
+            f"Очистить отложку {target_name}? В очереди сообщений: {len(message_keys)}.\n"
+            "Опубликованные посты сохранятся. Добавленные после этого запроса сообщения тоже сохранятся.\n\n"
+            f"В течение 2 минут напишите отдельным текстовым сообщением в этом чате:\n{CLEAR_CONFIRMATION}\n\n"
+            "Отмена: /cancel."
+        )
+    except Exception:
+        take_pending_clear(key)
+        logger.exception("Ошибка запроса очистки очереди")
+        await message.answer("Не удалось запросить очистку отложки. Повторите /clear.")
 
 
 @dp.message(Command("clearposted"))

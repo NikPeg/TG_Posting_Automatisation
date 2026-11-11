@@ -8,6 +8,7 @@ import csv
 from datetime import datetime, timedelta
 import timezone
 import adminstat
+from contextlib import closing
 
 MESSAGES_DB = "messages.db"
 
@@ -133,13 +134,25 @@ def save_messages(messages):
     conn.close()
 
 
-def clear_messages():
+def get_queued_message_keys(user_id):
     init_messages_db()
-    conn = sqlite3.connect(MESSAGES_DB)
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM messages')
-    conn.commit()
-    conn.close()
+    with closing(sqlite3.connect(MESSAGES_DB)) as conn:
+        return conn.execute(
+            'SELECT message_id, chat_id FROM messages WHERE user_id = ? AND posted = FALSE',
+            (user_id,),
+        ).fetchall()
+
+
+def clear_queued_messages(user_id, message_keys):
+    """Удалить только ещё не опубликованные сообщения из подтверждённого списка."""
+    init_messages_db()
+    with closing(sqlite3.connect(MESSAGES_DB)) as conn, conn:
+        cursor = conn.executemany(
+            'DELETE FROM messages WHERE user_id = ? AND posted = FALSE '
+            'AND message_id = ? AND chat_id = ?',
+            ((user_id, message_id, chat_id) for message_id, chat_id in message_keys),
+        )
+        return cursor.rowcount
 
 
 def clear_message(msg_id, adm_id):

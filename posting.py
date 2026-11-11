@@ -66,7 +66,16 @@ def _is_unrecoverable(reason: str) -> bool:
     return any(marker in reason for marker in unrecoverable)
 
 
+# Also held while a confirmed queue clear deletes rows.
+publication_lock = asyncio.Lock()
+
+
 async def forward_saved_message(target_message_id: int, target_chat_id: int):
+    async with publication_lock:
+        return await _forward_saved_message(target_message_id, target_chat_id)
+
+
+async def _forward_saved_message(target_message_id: int, target_chat_id: int):
 
     messages = msgs.load_messages()
     BOT_MAPPINGS = os.getenv('BOT_MAPPINGS', '')
