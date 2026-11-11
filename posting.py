@@ -7,6 +7,8 @@ import certifi
 from datetime import datetime, time, timedelta
 import asyncio
 import random
+import re
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from dotenv import load_dotenv
 import msgs
 import timezone
@@ -66,6 +68,85 @@ def _is_unrecoverable(reason: str) -> bool:
     return any(marker in reason for marker in unrecoverable)
 
 
+# Three retries after the initial request, for each bot separately.
+PUBLICATION_RETRY_DELAYS = (10, 20, 30)
+
+
+class _NamedBotAPIError(Exception):
+    def __init__(self, description, status, retry_after=0):
+        super().__init__(description)
+        self.status = status
+        self.retry_after = retry_after
+
+
+def _safe_error(error):
+    # aiohttp errors can contain the request URL, including the bot token.
+    if isinstance(error, asyncio.TimeoutError):
+        return "Истекло время ожидания ответа Telegram"
+    return re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot<скрыто>", str(error) or type(error).__name__)
+
+
+def _retry_details(error):
+    if isinstance(error, _NamedBotAPIError):
+        return error.status == 429 or error.status >= 500, error.retry_after
+    if isinstance(error, TelegramRetryAfter):
+        return True, error.retry_after
+    if isinstance(error, (TelegramNetworkError, TelegramServerError,
+                          aiohttp.ClientConnectionError, aiohttp.ClientPayloadError,
+                          asyncio.TimeoutError, ConnectionError)):
+        return True, 0
+    return False, 0
+
+
+async def _publish_with_retries(send, message_id, bot_label):
+    attempts = len(PUBLICATION_RETRY_DELAYS) + 1
+    for attempt in range(1, attempts + 1):
+        logger.info("Сообщение %s: %s, попытка публикации %s/%s",
+                    message_id, bot_label, attempt, attempts)
+        try:
+            return await send()
+        except Exception as error:
+            retryable, retry_after = _retry_details(error)
+            reason = _classify_error_str(_safe_error(error))
+            if not retryable or attempt == attempts:
+                logger.error("Сообщение %s: %s, попытка %s/%s не удалась: %s. %s",
+                             message_id, bot_label, attempt, attempts, reason,
+                             "Повторы исчерпаны" if retryable else "Ошибка не временная; повторы не выполняются")
+                raise
+            delay = max(PUBLICATION_RETRY_DELAYS[attempt - 1], retry_after)
+            logger.warning("Сообщение %s: %s, временная ошибка на попытке %s/%s: %s. "
+                           "Следующая попытка через %s с",
+                           message_id, bot_label, attempt, attempts, reason, delay)
+            await asyncio.sleep(delay)
+
+
+async def _send_named_message(token, method, payload):
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+        async with session.post(
+            f"https://api.telegram.org/bot{token}/{method}",
+            json=payload, ssl=ssl_context,
+        ) as response:
+            # A gateway may return an HTML error page instead of Telegram JSON.
+            if response.status == 429 or response.status >= 500:
+                try:
+                    data = await response.json()
+                except (ValueError, aiohttp.ContentTypeError):
+                    data = {}
+                raise _NamedBotAPIError(
+                    data.get("description", f"Telegram HTTP {response.status}"),
+                    response.status, data.get("parameters", {}).get("retry_after", 0),
+                )
+            data = await response.json()
+            if not data.get("ok", False):
+                raise _NamedBotAPIError(
+                    data.get("description", f"Telegram HTTP {response.status}"),
+                    data.get("error_code", response.status),
+                    data.get("parameters", {}).get("retry_after", 0),
+                )
+            result = data["result"]
+            return [item["message_id"] for item in result]
+
+
 # Also held while a confirmed queue clear deletes rows.
 publication_lock = asyncio.Lock()
 
@@ -100,122 +181,70 @@ async def _forward_saved_message(target_message_id: int, target_chat_id: int):
                 mgid = f' - медиа группа {msg["media_group"]}'
             else:
                 msg_to_send = [msg['message_id']]
-            if msg.get('user_id') not in bots:
+            from bot import bot
+            method = ("forwardMessages" if msg.get('is_forwarded_from_channel', True)
+                      and not msg.get('is_poll') else "copyMessages")
+            payload = {
+                "chat_id": target_chat_id,
+                "from_chat_id": msg['chat_id'],
+                "message_ids": msg_to_send,
+            }
+            published_ids = None
+            used_named_bot = False
+            user_id = msg.get('user_id')
+            if user_id in bots:
+                label = f"именной бот админа @{msg.get('username') or user_id}"
+
+                async def send_named():
+                    return await _send_named_message(bots[user_id], method, payload)
+
                 try:
-                    from bot import bot
-                    if msg.get('is_forwarded_from_channel', True) and not msg.get('is_poll'):
-                        forwarded_msg = await bot.forward_messages(
-                            chat_id=target_chat_id,
-                            from_chat_id=msg['chat_id'],
-                            message_ids=msg_to_send
-                        )
-                    else:
-                        forwarded_msg = await bot.copy_messages(
-                            chat_id=target_chat_id,
-                            from_chat_id=msg['chat_id'],
-                            message_ids=msg_to_send
-                        )
-
-                    post_link = _post_url(target_chat_id, forwarded_msg[0].message_id)
-                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал\n{post_link}")
-                    logger.info(f"Сообщение {target_message_id}{mgid} переслано в канал: {post_link}")
-                    for msgts, fmsg in zip(msg_to_send, forwarded_msg):
-                        msgs.update_message_posted(msgts, msg['chat_id'], fmsg.message_id)
-                    return True, None
-
-                except Exception as e:
-                    reason = _classify_error(e)
-                    logger.error(f"Ошибка при пересылке сообщения {target_message_id}: {reason}")
-                    if _is_unrecoverable(reason):
-                        msgs.clear_message(target_message_id, msg.get('user_id'))
-                        logger.warning(f"Сообщение {target_message_id} удалено из БД (неисправимая ошибка: {reason})")
-                    return False, reason
+                    published_ids = await _publish_with_retries(send_named, target_message_id, label)
+                    used_named_bot = True
+                except Exception as error:
+                    logger.warning(
+                        "Сообщение %s: привязка именного бота найдена, но публикация не удалась (%s). "
+                        "Переходим на основного бота",
+                        target_message_id, _classify_error_str(_safe_error(error)),
+                    )
             else:
-                other_bot_token = bots[msg.get('user_id')]
-                namebot_api_url = f"https://api.telegram.org/bot{other_bot_token}"
-                named_bot_ok = False
-                named_bot_fail_reason = None
+                logger.info("Сообщение %s: именной бот для админа %s не привязан; используем основного бота",
+                            target_message_id, user_id)
+
+            if published_ids is None:
+                async def send_main():
+                    send = bot.forward_messages if method == "forwardMessages" else bot.copy_messages
+                    result = await send(**payload)
+                    return [item.message_id for item in result]
+
                 try:
-                    if msg.get('is_forwarded_from_channel', True) and not msg.get('is_poll'):
-                        method = "forwardMessages"
-                    else:
-                        method = "copyMessages"
-
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            f"{namebot_api_url}/{method}",
-                            json={
-                                "chat_id": target_chat_id,
-                                "from_chat_id": msg['chat_id'],
-                                "message_ids": msg_to_send,
-                            },
-                            ssl=ssl_context
-                        ) as response:
-                            data = await response.json()
-
-                            if not data.get("ok", False):
-                                description = data.get("description", "")
-                                named_bot_fail_reason = _classify_error_str(description)
-                                if _is_unrecoverable(named_bot_fail_reason):
-                                    msgs.clear_message(target_message_id, msg.get('user_id'))
-                                    logger.warning(f"Сообщение {target_message_id} удалено из БД (неисправимая ошибка именного бота: {named_bot_fail_reason})")
-                            else:
-                                forwarded_msg = data["result"]
-                                named_bot_ok = True
-
-                        if named_bot_ok:
-                            post_link = _post_url(target_chat_id, forwarded_msg[0]['message_id'])
-                            genbot_api_url = f"https://api.telegram.org/bot{os.getenv('BOT_TOKEN')}"
-                            async with session.post(
-                                f"{genbot_api_url}/sendMessage",
-                                json={
-                                    "chat_id": msg['chat_id'],
-                                    "text": f"Сообщение {msg['message_id']}{mgid} переслано в канал\n{post_link}"
-                                }
-                            ) as response:
-                                data = await response.json()
-                                if not data.get("ok", False):
-                                    logger.error(f"Ошибка при отправке уведомления: {data}")
-
-                            logger.info(f"Сообщение {target_message_id}{mgid} отправлено ботом @{msg['username']}")
-                            for msgts, fmsg in zip(msg_to_send, forwarded_msg):
-                                msgs.update_message_posted(msgts, msg['chat_id'], fmsg['message_id'])
-                            return True, None
-
-                except Exception as e:
-                    named_bot_fail_reason = _classify_error(e)
-
-                logger.warning(
-                    f"Именной бот @{msg['username']} недоступен ({named_bot_fail_reason}). "
-                    f"Публикуем через основного бота. Добавьте именного бота командой /addbot"
-                )
-                try:
-                    from bot import bot
-                    if msg.get('is_forwarded_from_channel', True) and not msg.get('is_poll'):
-                        forwarded_msg = await bot.forward_messages(
-                            chat_id=target_chat_id,
-                            from_chat_id=msg['chat_id'],
-                            message_ids=msg_to_send
-                        )
-                    else:
-                        forwarded_msg = await bot.copy_messages(
-                            chat_id=target_chat_id,
-                            from_chat_id=msg['chat_id'],
-                            message_ids=msg_to_send
-                        )
-                    post_link = _post_url(target_chat_id, forwarded_msg[0].message_id)
-                    await bot.send_message(msg['chat_id'], f"Сообщение {target_message_id}{mgid} переслано в канал (через основного бота)\n{post_link}")
-                    logger.info(f"Сообщение {target_message_id}{mgid} переслано через основного бота: {post_link}")
-                    for msgts, fmsg in zip(msg_to_send, forwarded_msg):
-                        msgs.update_message_posted(msgts, msg['chat_id'], fmsg.message_id)
-                    return True, None
-                except Exception as e:
-                    reason = _classify_error(e)
-                    logger.error(f"Fallback через основного бота тоже не удался для сообщения {target_message_id}: {reason}")
+                    published_ids = await _publish_with_retries(send_main, target_message_id, "основной бот")
+                except Exception as error:
+                    reason = _classify_error_str(_safe_error(error))
                     if _is_unrecoverable(reason):
-                        msgs.clear_message(target_message_id, msg.get('user_id'))
-                        logger.warning(f"Сообщение {target_message_id} удалено из БД (неисправимая ошибка fallback: {reason})")
+                        msgs.clear_message(target_message_id, user_id)
+                        logger.warning("Сообщение %s удалено из БД: %s", target_message_id, reason)
+                    else:
+                        logger.error("Сообщение %s не опубликовано и оставлено в очереди: %s",
+                                     target_message_id, reason)
                     return False, reason
+
+            # Publication is complete. A failed notification must never trigger a new send.
+            for source_id, published_id in zip(msg_to_send, published_ids):
+                msgs.update_message_posted(source_id, msg['chat_id'], published_id)
+            post_link = _post_url(target_chat_id, published_ids[0])
+            label = "именного бота" if used_named_bot else "основного бота"
+            logger.info("Сообщение %s%s опубликовано через %s: %s", target_message_id, mgid, label, post_link)
+            try:
+                await bot.send_message(
+                    msg['chat_id'],
+                    f"Сообщение {target_message_id}{mgid} переслано в канал (через {label})\n{post_link}",
+                )
+            except Exception as error:
+                logger.warning("Сообщение %s уже опубликовано (%s), но уведомление админу не доставлено: %s. "
+                               "Повторная публикация не выполняется",
+                               target_message_id, post_link, _safe_error(error))
+            return True, None
 
     logger.warning(f"Сообщение {target_message_id} не найдено в базе")
     return False, "Сообщение не найдено в базе данных"
@@ -251,8 +280,11 @@ async def post_random():
                 parts = mapping.split(':')
                 if len(parts) >= 2:
                     token = ':'.join(parts[:-1])
-                    username = parts[-1]
-                    bots[username] = token
+                    try:
+                        user_id = int(parts[-1])
+                    except ValueError:
+                        user_id = parts[-1]
+                    bots[user_id] = token
 
     today_weekday = WEEKDAY_EN[timezone.tz_now().weekday()]
 
