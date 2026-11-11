@@ -11,11 +11,14 @@ jobs:
     steps:
       - name: Deploy to server via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE_DEDUP_SIMILARITY: ${{ vars.IMAGE_DEDUP_SIMILARITY || '0.92' }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           command_timeout: 30m
+          envs: IMAGE_DEDUP_SIMILARITY
           script: |
             set -e
 
@@ -25,6 +28,27 @@ jobs:
             echo "=== Обновляем код ==="
             cd "$DEPLOY_DIR"
             git pull origin main
+
+            echo "=== Настраиваем порог SSIM из GitHub Actions variable ==="
+            python3 - <<'PY'
+            import math
+            import os
+            import re
+            from pathlib import Path
+
+            threshold = float(os.environ['IMAGE_DEDUP_SIMILARITY'])
+            if not math.isfinite(threshold) or not 0 < threshold <= 1:
+                raise SystemExit('IMAGE_DEDUP_SIMILARITY must be a number in (0, 1]')
+            env_path = Path('.env')
+            lines = env_path.read_text().splitlines(keepends=True)
+            pattern = re.compile(r'^\s*(?:export\s+)?IMAGE_DEDUP_SIMILARITY\s*=')
+            lines = [line for line in lines if not pattern.match(line)]
+            if lines and not lines[-1].endswith('\n'):
+                lines[-1] += '\n'
+            lines.append(f'IMAGE_DEDUP_SIMILARITY={threshold:g}\n')
+            env_path.write_text(''.join(lines))
+            print(f'IMAGE_DEDUP_SIMILARITY={threshold:g}')
+            PY
 
             echo "=== Останавливаем старые контейнеры ==="
             CONTAINER_IDS=$(sudo docker ps -a --filter name=$CONTAINER_FILTER --format "{{.ID}}" || true)
