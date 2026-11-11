@@ -312,9 +312,14 @@ async def start_command(message: types.Message):
 @dp.message(Command("help"))
 @admin_required
 async def help_command(message: types.Message):
-    logger.info(f"Команда /help использована пользователем @{message.from_user.username}")
-    await message.answer(
-        "Команды для администраторов:\n\n"
+    logger.info("Справка запрошена пользователем ID %s", message.from_user.id)
+    ids = get_admin_ids()
+    is_chief = bool(ids) and message.from_user.id == ids[0]
+    greeting = (
+        "Привет, готов к работе! :)\n\nВот список моих команд:\n"
+        if is_chief else "Команды для администраторов:\n\n"
+    )
+    common_commands = (
         "/help — список команд\n"
         "/stat — статистика по всем админам за всё время (по умолчанию)\n"
         "/stat <b>&lt;N&gt;</b> — статистика за последние N дней (например, <code>/stat 7</code>)\n"
@@ -324,17 +329,35 @@ async def help_command(message: types.Message):
         "/posts <b>&lt;@username&gt;</b> <b>&lt;N&gt;</b> — топ-10 постов админа за N дней\n"
         "/best — топ-5 админов по отклику (картинка)\n"
         "/best <b>&lt;N&gt;</b> — топ-5 за последние N дней\n"
-        "/delmsg <b>&lt;message_id&gt;</b> — удалить сообщение из базы по ID\n"
+        "/messages — выгрузить сохранённые сообщения в CSV\n"
+        "/delmsg <b>&lt;message_id&gt;</b> — удалить своё сообщение из базы по ID\n"
         "/clear — очистить свою отложку с подтверждением\n"
-        "/clear <b>&lt;@username&gt;</b> — очистить отложку админа (только главный админ)\n"
         "/cancel — отменить запрос на очистку\n"
-        "/duplicates <b>&lt;@username&gt;</b> — переключить разрешение повторов (только главный админ)\n"
         "/group <b>&lt;on/off&gt;</b> — медиагруппы (сохранять альбом целиком или по отдельности)\n"
         "/weekday — показать текущий день публикации\n"
-        "/weekday <b>&lt;день&gt;</b> — публиковать только в этот день (monday…sunday)\n"
-        "/weekday off — публиковать в любой день\n",
-        parse_mode="HTML"
+        "/weekday <b>&lt;день&gt;</b> — публиковать новые посты только в этот день (monday…sunday)\n"
+        "/weekday off — публиковать новые посты в любой день\n"
     )
+    chief_commands = (
+        "\nКоманды главного администратора:\n"
+        "/post — опубликовать случайный пост прямо сейчас\n"
+        "/post <b>&lt;message_id&gt;</b> — опубликовать пост по ID\n"
+        "/post <b>&lt;@username&gt;</b> — опубликовать случайный пост админа\n"
+        "/post <b>&lt;@username&gt;</b> <b>&lt;message_id&gt;</b> — опубликовать пост админа по ID\n"
+        "/settime <b>&lt;HH:MM&gt;</b> <b>&lt;HH:MM&gt;</b> — установить время начала и конца постинга\n"
+        "/setinterval <b>&lt;seconds&gt;</b> — установить интервал постинга в секундах\n"
+        "/resetstattime <b>&lt;days&gt;</b> — сохранить интервал сброса статистики (автосброс сейчас отключён)\n"
+        "/config — текущие настройки\n"
+        "/clear <b>&lt;@username&gt;</b> — очистить отложку админа с подтверждением\n"
+        "/clearposted — удалить опубликованные сообщения из базы\n"
+        "/collectstats — собрать просмотры и реакции\n"
+        "/duplicates <b>&lt;@username&gt;</b> — переключить разрешение повторных картинок для админа\n"
+        "/addadm <b>&lt;@username&gt;</b> — добавить админа\n"
+        "/deladm <b>&lt;@username&gt;</b> — удалить админа\n"
+        "/addbot <b>&lt;BOT_TOKEN&gt;</b> <b>&lt;@username&gt;</b> — добавить именного бота для пользователя\n"
+        "/deletebot <b>&lt;@username&gt;</b> — удалить именного бота пользователя\n"
+    )
+    await message.answer(greeting + common_commands + (chief_commands if is_chief else ""), parse_mode="HTML")
 
 
 @dp.message(Command("post"))
