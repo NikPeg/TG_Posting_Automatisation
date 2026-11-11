@@ -272,6 +272,32 @@ IMAGE_DEDUP_CANDIDATES=32
 IMAGE_DEDUP_SIMILARITY=0.92
 ```
 
+Диагностика доступна в обычных INFO-логах, отдельный debug-режим не нужен:
+
+```bash
+docker logs --since 24h posting_bot 2>&1 | grep 'image_dedup '
+```
+
+Каждая запись содержит JSON с `stage`, ID чата, сообщения и отправителя.
+Для поиска конкретной загрузки нужно учитывать пару `chat_id` + `message_id`.
+Этапы: `start`, `file_unique_id`, `permission`, `normalized`, `pixel_hash`,
+`candidates`, `ssim`, `search_result`, `decision`. При раннем совпадении
+последующие этапы не выполняются. Причины дубля: `file_unique_id_match`,
+`normalized_pixel_hash_match`, `ssim_match`.
+
+В логах видны ID найденного сообщения/автора, его статус и ID публикации,
+расстояния pHash/dHash, пороги и условие AND, количество кандидатов и факт
+усечения списка. Для каждого проверенного кандидата пишутся `ssim_mean`,
+`ssim_p10`, `ssim_minimum`, итоговый `ssim_score` и `ssim_threshold`.
+Баллы SSIM не являются вероятностью совпадения. При отсутствии дубля
+сохраняются причина (`no_candidates` или `ssim_below_threshold`) и ближайшие
+найденные показатели. `decision` сообщает итог: `saved`, `duplicate` или
+`error`; обход проверки по правам отмечается как `duplicates_allowed`.
+
+Подписи, пиксели, токены и скачиваемый `file_id` в диагностические события
+не включаются. В Docker Compose настроена ротация: до трёх файлов логов по
+10 МБ. Старые логи вытесняются; диагностика не восстанавливается задним числом.
+
 Схема и блочное сравнение основаны на
 [TeleBOYANkeeper](https://github.com/k0stett/TeleBOYANkeeper); реализация на
 Python/Pillow/NumPy, без нейросетей. Числа хешей относятся к нашей версии

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -181,6 +182,55 @@ class HistoryTests(unittest.TestCase):
         transparent = dedup.prepare(encoded(clear), self.settings)
         self.assertEqual(transparent.rgb, b'\xff' * dedup.RGB_SIZE)
 
+    def log_events(self, output):
+        return [json.loads(record.getMessage().removeprefix('image_dedup ')) for record in output.records]
+
+    def test_logs_distinguish_telegram_id_from_normalized_pixel_match(self):
+        self.save()
+        with self.assertLogs('image_dedup', level='INFO') as output:
+            self.history.find(unique_id='file-one')
+            self.history.find(fingerprint=self.fingerprint)
+        events = self.log_events(output)
+        self.assertEqual([event['reason'] for event in events],
+                         ['file_unique_id_match', 'normalized_pixel_hash_match'])
+        self.assertEqual(events[0]['match_message_id'], 1)
+        self.assertEqual(events[0]['match_chat_id'], 2)
+
+    def test_logs_include_ssim_components_threshold_and_distances(self):
+        self.save()
+        query = dedup.prepare(encoded(meme(), 'JPEG', quality=62), self.settings)
+        with self.assertLogs('image_dedup', level='INFO') as output:
+            self.assertIsNotNone(self.history.find(fingerprint=query))
+        events = self.log_events(output)
+        candidate = next(e for e in events if e['stage'] == 'candidates')
+        self.assertEqual(candidate['gate'], 'AND')
+        self.assertEqual(candidate['both_passed'], 1)
+        comparison = next(e for e in events if e['stage'] == 'ssim')
+        self.assertIn('phash_distance', comparison)
+        self.assertIn('dhash_distance', comparison)
+        self.assertIn('ssim_minimum', comparison)
+        self.assertAlmostEqual(comparison['ssim_score'],
+                               .75*comparison['ssim_mean'] + .25*comparison['ssim_p10'])
+        self.assertEqual(comparison['ssim_threshold'], .92)
+        self.assertEqual(events[-1]['reason'], 'ssim_match')
+
+    def test_logs_explain_no_candidate_and_ssim_rejection(self):
+        self.save()
+        query = replace(self.fingerprint, content_hash='image:v1:different',
+                        phash=self.fingerprint.phash ^ ((1 << 64)-1))
+        with self.assertLogs('image_dedup', level='INFO') as output:
+            self.assertIsNone(self.history.find(fingerprint=query))
+        events = self.log_events(output)
+        candidate = next(e for e in events if e['stage'] == 'candidates')
+        self.assertEqual(candidate['nearest']['phash_distance'], 64)
+        self.assertEqual(candidate['both_passed'], 0)
+        self.assertEqual(events[-1]['reason'], 'no_candidates')
+        query = dedup.prepare(encoded(meme(), 'JPEG', quality=62), self.settings)
+        history = dedup.ImageHistory(self.db, replace(self.settings, similarity=1))
+        with self.assertLogs('image_dedup', level='INFO') as output:
+            self.assertIsNone(history.find(fingerprint=query))
+        self.assertEqual(self.log_events(output)[-1]['reason'], 'ssim_below_threshold')
+
 
 class HandlerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -228,6 +278,21 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.download.assert_not_awaited()
         self.assertIn('@admin2', self.answer.call_args.args[0])
         self.assertTrue(all(buf.closed for buf in self.buffers))
+
+    async def test_decision_logs_have_message_context_and_no_captions_or_download_ids(self):
+        with self.assertLogs('image_dedup', level='INFO') as output:
+            await self.send(message(caption='PRIVATE_CAPTION_NEVER_LOGGED'))
+            await self.send(message(mid=2, user=3))
+        events = [json.loads(record.getMessage().removeprefix('image_dedup ')) for record in output.records]
+        decision = events[-1]
+        self.assertEqual(decision['stage'], 'decision')
+        self.assertEqual(decision['outcome'], 'duplicate')
+        self.assertEqual(decision['reason'], 'file_unique_id_match')
+        self.assertEqual(decision['message_id'], 2)
+        self.assertEqual(decision['user_id'], 3)
+        self.assertEqual(decision['match_message_id'], 1)
+        self.assertNotIn('PRIVATE_CAPTION_NEVER_LOGGED', str(output.output))
+        self.assertNotIn('download-id', str(output.output))
 
     async def test_concurrent_uploads_only_enqueue_one(self):
         results = await asyncio.gather(self.send(message()), self.send(message(mid=2, uid='different-id', user=3)))

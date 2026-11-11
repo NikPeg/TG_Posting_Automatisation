@@ -83,13 +83,18 @@ def duplicate_image_notice(match, actor_id):
 async def save_checked_image(message, photo):
     # Serialize check + save across all admins, including concurrent album updates.
     async with image_check_lock:
+        context = {'chat_id': message.chat.id, 'message_id': message.message_id,
+                   'user_id': message.from_user.id}
+        image_dedup.log_event('start', **context)
         try:
             settings = image_dedup.Settings.from_env()
             await asyncio.to_thread(msgs.init_messages_db)
-            history = image_dedup.ImageHistory(msgs.MESSAGES_DB, settings)
+            history = image_dedup.ImageHistory(msgs.MESSAGES_DB, settings, context=context)
             match = await asyncio.to_thread(history.find, unique_id=photo.file_unique_id)
             allowed = await asyncio.to_thread(duplicates_allowed, message.from_user.id, get_admin_ids()[0])
+            history.log('permission', duplicates_allowed=allowed)
             if match is not None and not allowed:
+                history.log('decision', outcome='duplicate', reason=history.reason, **image_dedup.match_reference(match))
                 await message.answer(duplicate_image_notice(match, message.from_user.id))
                 return None
             if match is not None:
@@ -104,17 +109,28 @@ async def save_checked_image(message, photo):
                 with image_dedup.BoundedDownload(settings.download_bytes) as output:
                     await bot.download(photo.file_id, destination=output)
                     fingerprint = await asyncio.to_thread(image_dedup.prepare, output.getvalue(), settings)
+                    history.log('normalized', download_bytes=output.getbuffer().nbytes,
+                                rgb_bytes=len(fingerprint.rgb), width=128, height=128,
+                                content_hash=fingerprint.content_hash,
+                                phash=f'{fingerprint.phash:016x}', dhash=f'{fingerprint.dhash:016x}')
                 if not allowed:
                     match = await asyncio.to_thread(history.find, fingerprint=fingerprint)
                     if match is not None:
+                        history.log('decision', outcome='duplicate', reason=history.reason,
+                                    **image_dedup.match_reference(match))
                         await message.answer(duplicate_image_notice(match, message.from_user.id))
                         return None
-            return await asyncio.to_thread(
+            saved = await asyncio.to_thread(
                 msgs.save_message_to_db, message, (photo.file_unique_id, fingerprint)
             )
+            history.log('decision', outcome='saved', reason='duplicates_allowed' if allowed else history.reason,
+                        content_hash=fingerprint.content_hash, reused_rgb=match is not None)
+            return saved
         except image_dedup.ImageCheckError as exc:
+            image_dedup.log_event('decision', **context, outcome='error', error_type=type(exc).__name__, reason=str(exc))
             await message.answer(f'{exc}. Картинка не добавлена в отложку.')
-        except Exception:
+        except Exception as exc:
+            image_dedup.log_event('decision', **context, outcome='error', error_type=type(exc).__name__)
             logger.exception('Не удалось проверить картинку chat=%s message=%s', message.chat.id, message.message_id)
             await message.answer('Не удалось проверить картинку на дубли. Она не добавлена в отложку; попробуйте позже.')
         return None

@@ -8,12 +8,30 @@ import hashlib
 import os
 import sqlite3
 import heapq
+import json
+import logging
 import warnings
 from contextlib import closing
 from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+logger = logging.getLogger(__name__)
+
+
+def log_event(stage, **fields):
+    """One-line diagnostics; never include originals, captions, file_id or bot tokens."""
+    logger.info('image_dedup %s', json.dumps({'stage': stage, **fields}, ensure_ascii=False))
+
+
+def match_reference(match):
+    return {
+        'match_chat_id': match['chat_id'], 'match_message_id': match['message_id'],
+        'match_user_id': match['user_id'], 'match_posted': bool(match['posted']),
+        'match_channel_id': match['publication_channel_id'],
+        'match_channel_message_id': match['current_message_id'],
+    }
 
 
 class ImageCheckError(ValueError):
@@ -126,7 +144,7 @@ def prepare(data, settings):
     return Fingerprint(HASH_PREFIX + hashlib.sha256(rgb).hexdigest(), phash, dhash, rgb)
 
 
-def _structural(a, b):
+def _structural(a, b, details=None):
     # 256 blocks; preserve local differences such as changed meme text.
     a = a.reshape(16, 8, 16, 8, -1).transpose(0, 2, 1, 3, 4).reshape(256, 64, -1)
     b = b.reshape(16, 8, 16, 8, -1).transpose(0, 2, 1, 3, 4).reshape(256, 64, -1)
@@ -137,21 +155,30 @@ def _structural(a, b):
     scores = ((2*ma*mb+6.5025)*(2*covariance+58.5225)
               / ((ma*ma+mb*mb+6.5025)*(va+vb+58.5225)))
     blocks = np.clip(scores, 0, 1).mean(axis=1)
-    return float(0.75*blocks.mean() + 0.25*np.sort(blocks)[25])
+    mean, p10, minimum = float(blocks.mean()), float(np.sort(blocks)[25]), float(blocks.min())
+    score = 0.75*mean + 0.25*p10
+    if details is not None:
+        details.update(ssim_mean=mean, ssim_p10=p10, ssim_minimum=minimum, ssim_score=score)
+    return score
 
 
-def similarity(first, second):
+def similarity(first, second, *, details=None):
     if len(first) != RGB_SIZE or len(second) != RGB_SIZE:
         raise ImageCheckError('Некорректный размер RGB-миниатюры в базе')
     a = np.frombuffer(first, dtype=np.uint8).reshape(128, 128, 3).astype(float)
     b = np.frombuffer(second, dtype=np.uint8).reshape(128, 128, 3).astype(float)
-    return _structural(a, b)
+    return _structural(a, b, details)
 
 
 class ImageHistory:
-    def __init__(self, database, settings=None):
+    def __init__(self, database, settings=None, *, context=None):
         self.database = database
         self.settings = settings or Settings.from_env()
+        self.context = context or {}
+        self.reason = None
+
+    def log(self, stage, **fields):
+        log_event(stage, **self.context, **fields)
 
     def find(self, *, unique_id=None, fingerprint=None):
         with closing(sqlite3.connect(self.database)) as conn:
@@ -161,34 +188,73 @@ class ImageHistory:
                     AND content_hash LIKE 'image:v1:%' AND image_rgb IS NOT NULL
                     ORDER BY posted DESC, message_id, chat_id LIMIT 1''', (unique_id,)).fetchone()
                 if match is not None:
+                    self.reason = 'file_unique_id_match'
+                    self.log('file_unique_id', outcome='match', reason=self.reason,
+                             file_unique_id=unique_id, **match_reference(match))
                     return dict(match)
+                self.log('file_unique_id', outcome='no_match', file_unique_id=unique_id)
             if fingerprint is None:
                 return None
             match = conn.execute('''SELECT * FROM messages WHERE content_hash=?
                 AND image_rgb IS NOT NULL ORDER BY posted DESC, message_id, chat_id LIMIT 1''',
                                  (fingerprint.content_hash,)).fetchone()
             if match is not None:
+                self.reason = 'normalized_pixel_hash_match'
+                self.log('pixel_hash', outcome='match', reason=self.reason,
+                         content_hash=fingerprint.content_hash, **match_reference(match))
                 return dict(match)
+            self.log('pixel_hash', outcome='no_match', content_hash=fingerprint.content_hash)
+
+            stats = {'scanned': 0, 'phash_passed': 0, 'dhash_passed': 0, 'both_passed': 0}
+            nearest, nearest_rank = None, None
 
             def candidates():
+                nonlocal nearest, nearest_rank
                 for row in conn.execute("""SELECT chat_id,message_id,image_phash,image_dhash
                     FROM messages WHERE image_phash IS NOT NULL AND image_dhash IS NOT NULL
                     AND content_hash LIKE 'image:v1:%'"""):
                     pd = (fingerprint.phash ^ int(row['image_phash'], 16)).bit_count()
                     dd = (fingerprint.dhash ^ int(row['image_dhash'], 16)).bit_count()
+                    stats['scanned'] += 1
+                    stats['phash_passed'] += int(pd <= self.settings.phash_distance)
+                    stats['dhash_passed'] += int(dd <= self.settings.dhash_distance)
+                    rank = (max(0, pd-self.settings.phash_distance) + max(0, dd-self.settings.dhash_distance), pd+dd)
+                    if nearest_rank is None or rank < nearest_rank:
+                        nearest_rank = rank
+                        nearest = {'chat_id': row['chat_id'], 'message_id': row['message_id'],
+                                   'phash_distance': pd, 'dhash_distance': dd}
                     if pd <= self.settings.phash_distance and dd <= self.settings.dhash_distance:
+                        stats['both_passed'] += 1
                         yield pd, dd, row['message_id'], row['chat_id']
 
             best, best_score = None, self.settings.similarity
             # Keep only the best candidates in memory, regardless of history length.
-            for _, _, message_id, chat_id in heapq.nsmallest(self.settings.candidates, candidates()):
+            selected = heapq.nsmallest(self.settings.candidates, candidates())
+            self.log('candidates', **stats, query_phash=f'{fingerprint.phash:016x}',
+                     query_dhash=f'{fingerprint.dhash:016x}', phash_threshold=self.settings.phash_distance,
+                     dhash_threshold=self.settings.dhash_distance, gate='AND', selected=len(selected),
+                     candidate_limit=self.settings.candidates,
+                     truncated=stats['both_passed'] > self.settings.candidates, nearest=nearest)
+            highest_score, closest = None, None
+            for pd, dd, message_id, chat_id in selected:
                 row = conn.execute('SELECT * FROM messages WHERE chat_id=? AND message_id=?',
                                    (chat_id, message_id)).fetchone()
                 if row['image_rgb'] is None:
+                    self.log('ssim', outcome='skipped_missing_rgb', match_chat_id=chat_id, match_message_id=message_id)
                     continue
-                score = similarity(fingerprint.rgb, row['image_rgb'])
+                details = {}
+                score = similarity(fingerprint.rgb, row['image_rgb'], details=details)
+                self.log('ssim', **match_reference(row), phash_distance=pd, dhash_distance=dd,
+                         **details, ssim_threshold=self.settings.similarity,
+                         outcome='passed' if score >= self.settings.similarity else 'rejected')
+                if highest_score is None or score > highest_score:
+                    highest_score, closest = score, match_reference(row)
                 if score >= self.settings.similarity and (best is None or score > best_score):
                     best, best_score = dict(row), score
+            self.reason = 'ssim_match' if best is not None else ('ssim_below_threshold' if selected else 'no_candidates')
+            self.log('search_result', outcome='match' if best is not None else 'no_match', reason=self.reason,
+                     best_score=highest_score, ssim_threshold=self.settings.similarity, closest=closest,
+                     **(match_reference(best) if best is not None else {}))
             return best
 
 
