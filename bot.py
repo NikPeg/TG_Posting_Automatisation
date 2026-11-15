@@ -4,7 +4,9 @@ import importlib
 import logging
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
+from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.filters import Command
+from aiohttp import ClientConnectionError, ClientPayloadError
 from telethon import TelegramClient
 import asyncio
 import ssl
@@ -18,6 +20,7 @@ import admin_utils
 import timezone
 from posting import (
     forward_saved_message,
+    new_message_event,
     periodic_post,
     post_random,
     publication_lock,
@@ -66,6 +69,12 @@ class PendingClear:
 
 pending_clears = {}
 image_check_lock = asyncio.Lock()
+IMAGE_DOWNLOAD_TIMEOUT = 30
+IMAGE_DOWNLOAD_RETRY_DELAYS = (1, 2, 4)
+IMAGE_DOWNLOAD_TRANSIENT_ERRORS = (
+    TelegramNetworkError, TelegramServerError, ClientConnectionError,
+    ClientPayloadError, asyncio.TimeoutError,
+)
 
 
 def duplicate_image_notice(match, actor_id):
@@ -80,60 +89,112 @@ def duplicate_image_notice(match, actor_id):
     return f"Эта картинка уже в отложке у {author}. Повтор не добавлен."
 
 
+async def download_image(photo, settings, history):
+    if photo.file_size and photo.file_size > settings.download_bytes:
+        raise image_dedup.ImageCheckError('Картинка превышает лимит загрузки')
+    for attempt, delay in enumerate((*IMAGE_DOWNLOAD_RETRY_DELAYS, None), start=1):
+        try:
+            # A failed transfer may leave partial bytes in the buffer.
+            with image_dedup.BoundedDownload(settings.download_bytes) as output:
+                await asyncio.wait_for(
+                    bot.download(photo.file_id, destination=output),
+                    timeout=IMAGE_DOWNLOAD_TIMEOUT,
+                )
+                return output.getvalue()
+        except IMAGE_DOWNLOAD_TRANSIENT_ERRORS as exc:
+            if delay is None:
+                raise
+            history.log('download', level=logging.WARNING, outcome='retry',
+                        error_type=type(exc).__name__, attempt=attempt, retry_in_seconds=delay)
+            await asyncio.sleep(delay)
+
+
 async def save_checked_image(message, photo):
     # Serialize check + save across all admins, including concurrent album updates.
     async with image_check_lock:
         context = {'chat_id': message.chat.id, 'message_id': message.message_id,
                    'user_id': message.from_user.id}
-        image_dedup.log_event('start', **context)
+        history = image_dedup.ImageHistory(msgs.MESSAGES_DB, image_dedup.Settings(), context=context)
+        history.log('start')
+        check_incomplete = False
+
+        def warn_skipped(stage, exc):
+            nonlocal check_incomplete
+            check_incomplete = True
+            details = {'reason': str(exc)} if isinstance(exc, image_dedup.ImageCheckError) else {}
+            history.log(stage, level=logging.WARNING, outcome='skipped', error_type=type(exc).__name__, **details)
+
+        match = None
         try:
-            settings = image_dedup.Settings.from_env()
             await asyncio.to_thread(msgs.init_messages_db)
-            history = image_dedup.ImageHistory(msgs.MESSAGES_DB, settings, context=context)
             match = await asyncio.to_thread(history.find, unique_id=photo.file_unique_id)
+        except Exception as exc:
+            warn_skipped('file_unique_id', exc)
+
+        allowed = None
+        try:
             allowed = await asyncio.to_thread(duplicates_allowed, message.from_user.id, get_admin_ids()[0])
             history.log('permission', duplicates_allowed=allowed)
-            if match is not None and not allowed:
-                history.log('decision', outcome='duplicate', reason=history.reason, **image_dedup.match_reference(match))
-                await message.answer(duplicate_image_notice(match, message.from_user.id))
-                return None
-            if match is not None:
-                # Reuse known pixels for permitted repeats, without downloading again.
-                fingerprint = image_dedup.Fingerprint(
-                    match['content_hash'], int(match['image_phash'], 16),
-                    int(match['image_dhash'], 16), match['image_rgb'],
-                )
-            else:
-                if photo.file_size and photo.file_size > settings.download_bytes:
-                    raise image_dedup.ImageCheckError('Картинка превышает лимит загрузки')
-                with image_dedup.BoundedDownload(settings.download_bytes) as output:
-                    await bot.download(photo.file_id, destination=output)
-                    fingerprint = await asyncio.to_thread(image_dedup.prepare, output.getvalue(), settings)
-                    history.log('normalized', download_bytes=output.getbuffer().nbytes,
-                                rgb_bytes=len(fingerprint.rgb), width=128, height=128,
-                                content_hash=fingerprint.content_hash,
+        except Exception as exc:
+            warn_skipped('permission', exc)
+
+        fingerprint = None
+        reused_rgb = False
+        if match is None or allowed is not False:
+            if match is not None and match['image_rgb'] is not None:
+                try:
+                    fingerprint = image_dedup.Fingerprint(
+                        match['content_hash'], int(match['image_phash'], 16),
+                        int(match['image_dhash'], 16), match['image_rgb'],
+                    )
+                    reused_rgb = True
+                except (TypeError, ValueError) as exc:
+                    warn_skipped('reuse_rgb', exc)
+
+            if fingerprint is None:
+                stage = 'settings'
+                try:
+                    settings = image_dedup.Settings.from_env()
+                    history.settings = settings
+                    stage = 'download'
+                    data = await download_image(photo, settings, history)
+                    stage = 'normalized'
+                    fingerprint = await asyncio.to_thread(image_dedup.prepare, data, settings)
+                    history.log('normalized', download_bytes=len(data), rgb_bytes=len(fingerprint.rgb),
+                                width=128, height=128, content_hash=fingerprint.content_hash,
                                 phash=f'{fingerprint.phash:016x}', dhash=f'{fingerprint.dhash:016x}')
-                if not allowed:
+                except Exception as exc:
+                    warn_skipped(stage, exc)
+
+            if match is None and fingerprint is not None and allowed is not True:
+                try:
                     match = await asyncio.to_thread(history.find, fingerprint=fingerprint)
-                    if match is not None:
-                        history.log('decision', outcome='duplicate', reason=history.reason,
-                                    **image_dedup.match_reference(match))
-                        await message.answer(duplicate_image_notice(match, message.from_user.id))
-                        return None
+                except Exception as exc:
+                    warn_skipped('visual_match', exc)
+
+        if match is not None and allowed is False:
+            history.log('decision', outcome='duplicate', reason=history.reason, **image_dedup.match_reference(match))
+            await message.answer(duplicate_image_notice(match, message.from_user.id))
+            return None
+
+        try:
             saved = await asyncio.to_thread(
                 msgs.save_message_to_db, message, (photo.file_unique_id, fingerprint)
             )
-            history.log('decision', outcome='saved', reason='duplicates_allowed' if allowed else history.reason,
-                        content_hash=fingerprint.content_hash, reused_rgb=match is not None)
-            return saved
-        except image_dedup.ImageCheckError as exc:
-            image_dedup.log_event('decision', **context, outcome='error', error_type=type(exc).__name__, reason=str(exc))
-            await message.answer(f'{exc}. Картинка не добавлена в отложку.')
         except Exception as exc:
-            image_dedup.log_event('decision', **context, outcome='error', error_type=type(exc).__name__)
-            logger.exception('Не удалось проверить картинку chat=%s message=%s', message.chat.id, message.message_id)
-            await message.answer('Не удалось проверить картинку на дубли. Она не добавлена в отложку; попробуйте позже.')
-        return None
+            if fingerprint is None:
+                raise
+            # A failed fingerprint write rolls back the insert. Retry with the Telegram ID alone.
+            warn_skipped('store_fingerprint', exc)
+            reused_rgb = False
+            saved = await asyncio.to_thread(msgs.save_message_to_db, message, (photo.file_unique_id, None))
+
+        reason = 'duplicates_allowed' if allowed else history.reason
+        if check_incomplete:
+            reason = 'check_incomplete'
+        history.log('decision', outcome='saved', reason=reason, content_hash=saved['content_hash'],
+                    reused_rgb=reused_rgb)
+        return saved
 
 
 def clear_request_key(message):
@@ -310,10 +371,9 @@ async def handle_source_message(message: types.Message):
     if weekday:
         day_ru = msgs.WEEKDAY_NAMES_RU_ACCUSATIVE.get(weekday, weekday)
         weekday_note = f" на {day_ru}"
+    new_message_event.set()
     await message.answer(f"Сообщение сохранено в базе данных: ID {message_data['message_id']} от {message_data['username']}{weekday_note}")
     logger.info(f"Сообщение сохранено в базе данных: ID {message_data['message_id']} от {message_data['username']}{weekday_note}")
-    from posting import new_message_event
-    new_message_event.set()
 
 
 @dp.message(Command("start"))

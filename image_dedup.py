@@ -20,9 +20,9 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 logger = logging.getLogger(__name__)
 
 
-def log_event(stage, **fields):
+def log_event(stage, *, level=logging.INFO, **fields):
     """One-line diagnostics; never include originals, captions, file_id or bot tokens."""
-    logger.info('image_dedup %s', json.dumps({'stage': stage, **fields}, ensure_ascii=False))
+    logger.log(level, 'image_dedup %s', json.dumps({'stage': stage, **fields}, ensure_ascii=False))
 
 
 def match_reference(match):
@@ -185,7 +185,6 @@ class ImageHistory:
             conn.row_factory = sqlite3.Row
             if unique_id:
                 match = conn.execute('''SELECT * FROM messages WHERE file_unique_id=?
-                    AND content_hash LIKE 'image:v1:%' AND image_rgb IS NOT NULL
                     ORDER BY posted DESC, message_id, chat_id LIMIT 1''', (unique_id,)).fetchone()
                 if match is not None:
                     self.reason = 'file_unique_id_match'
@@ -258,12 +257,12 @@ class ImageHistory:
             return best
 
 
-def store(conn, message, unique_id, fingerprint):
+def store(conn, message, fingerprint):
     if len(fingerprint.rgb) != RGB_SIZE:
         raise ImageCheckError('Некорректный размер RGB-миниатюры')
     # Queue insertion and fingerprint update share the caller's transaction.
-    conn.execute('''UPDATE messages SET content_hash=?, file_unique_id=?, image_phash=?,
+    conn.execute('''UPDATE messages SET content_hash=?, image_phash=?,
         image_dhash=?, image_rgb=? WHERE chat_id=? AND message_id=?''', (
-            fingerprint.content_hash, unique_id, f'{fingerprint.phash:016x}',
+            fingerprint.content_hash, f'{fingerprint.phash:016x}',
             f'{fingerprint.dhash:016x}', fingerprint.rgb, message.chat.id, message.message_id,
         ))

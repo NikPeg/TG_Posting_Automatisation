@@ -220,12 +220,18 @@ def save_message_to_db(message: types.Message, image_check=None):
 
     is_forwarded_from_channel = message.forward_origin is not None and hasattr(message.forward_origin, 'chat') and message.forward_origin.chat.type in ['channel']
     is_poll = message.poll is not None
+    unique_id, fingerprint = image_check if image_check is not None else (None, None)
     with closing(sqlite3.connect(MESSAGES_DB)) as conn, conn:
-        cursor = conn.execute('INSERT OR IGNORE INTO messages (message_id, chat_id, username, user_id, posted, is_forwarded_from_channel, views, reactions, media_group, weekday, is_poll) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?)',
-                       (message.message_id, message.chat.id, username, message.from_user.id, is_forwarded_from_channel, 0, 0, media_group_id, weekday, is_poll))
-        if image_check is not None and cursor.rowcount:
-            unique_id, fingerprint = image_check
-            image_dedup.store(conn, message, unique_id, fingerprint)
+        cursor = conn.execute(
+            '''INSERT OR IGNORE INTO messages (
+                message_id, chat_id, username, user_id, posted, is_forwarded_from_channel,
+                views, reactions, media_group, weekday, is_poll, file_unique_id
+            ) VALUES (?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?)''',
+            (message.message_id, message.chat.id, username, message.from_user.id,
+             is_forwarded_from_channel, 0, 0, media_group_id, weekday, is_poll, unique_id),
+        )
+        if fingerprint is not None and cursor.rowcount:
+            image_dedup.store(conn, message, fingerprint)
 
     logger.info(f"Сообщение {message.message_id}{mgid} сохранено в базу данных от пользователя {username or message.from_user.id}")
 
@@ -241,7 +247,7 @@ def save_message_to_db(message: types.Message, image_check=None):
         'media_group': media_group_id,
         'weekday': weekday,
         'is_poll': is_poll,
-        'content_hash': image_check[1].content_hash if image_check else None,
+        'content_hash': fingerprint.content_hash if fingerprint is not None else None,
     }
 
 

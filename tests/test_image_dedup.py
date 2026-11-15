@@ -21,6 +21,8 @@ with patch.dict(os.environ, {'BOT_TOKEN': '123456:local-test-token', 'CHANNEL_ID
     import adminstat
 
 from aiogram import types
+from aiogram.exceptions import TelegramNetworkError
+from aiogram.methods import GetFile
 
 
 def meme(text='THIS IS THE ORIGINAL MEME'):
@@ -354,15 +356,84 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         await self.send(message(mid=3, user=3))
         self.assertIn('https://t.me/c/987/777', self.answer.call_args.args[0])
 
-    async def test_download_error_does_not_enqueue_or_leave_open_buffer(self):
-        async def fail(*args, destination, **kwargs):
+    async def test_download_retries_use_a_fresh_buffer_and_keep_the_visual_check(self):
+        await self.send(message())
+        self.download.reset_mock()
+        attempts = 0
+
+        async def download(*args, destination, **kwargs):
+            nonlocal attempts
             self.buffers.append(destination)
-            destination.write(b'partial')
-            raise OSError('offline')
-        self.download.side_effect = fail
-        self.assertIsNone(await self.send(message()))
-        self.assertEqual(msgs.load_messages(), [])
-        self.assertTrue(self.buffers[0].closed)
+            self.assertEqual(destination.tell(), 0)
+            attempts += 1
+            if attempts < 4:
+                destination.write(b'partial')
+                raise TelegramNetworkError(GetFile(file_id='download-id'), 'Request timeout error')
+            destination.write(self.download_data)
+
+        self.download.side_effect = download
+        with patch.object(bot, 'IMAGE_DOWNLOAD_RETRY_DELAYS', (0, 0, 0)):
+            with self.assertLogs('image_dedup', level='WARNING') as output:
+                self.assertIsNone(await self.send(message(mid=2, uid='reuploaded')))
+        self.assertEqual(self.download.await_count, 4)
+        self.assertEqual(len(output.records), 3)
+        self.assertEqual(len(msgs.load_messages()), 1)
+        self.assertTrue(all(buf.closed for buf in self.buffers))
+
+    async def test_exhausted_retries_enqueue_and_keep_the_telegram_id(self):
+        self.download.side_effect = TelegramNetworkError(
+            GetFile(file_id='download-id'), 'Request timeout error'
+        )
+        with patch.object(bot, 'IMAGE_DOWNLOAD_RETRY_DELAYS', (0, 0, 0)):
+            with self.assertLogs('image_dedup', level='WARNING') as output:
+                await bot.handle_source_message(message())
+        self.assertEqual(self.download.await_count, 4)
+        self.assertIn('"outcome": "skipped"', output.output[-1])
+        self.assertIn('Сообщение сохранено', self.answer.call_args.args[0])
+        self.assertIsNone(msgs.load_messages()[0]['content_hash'])
+
+        self.download.reset_mock()
+        self.assertIsNone(await self.send(message(mid=2, user=3)))
+        self.download.assert_not_awaited()
+        self.assertEqual(len(msgs.load_messages()), 1)
+
+    async def test_visual_check_still_runs_if_telegram_id_lookup_fails(self):
+        await self.send(message())
+        original_find = dedup.ImageHistory.find
+
+        def find(history, *, unique_id=None, fingerprint=None):
+            if unique_id is not None:
+                raise sqlite3.OperationalError('lookup failed')
+            return original_find(history, fingerprint=fingerprint)
+
+        with patch.object(dedup.ImageHistory, 'find', find):
+            with self.assertLogs('image_dedup', level='WARNING'):
+                self.assertIsNone(await self.send(message(mid=2, uid='reuploaded')))
+        self.assertEqual(len(msgs.load_messages()), 1)
+
+    async def test_all_checks_can_fail_and_still_enqueue(self):
+        self.download.side_effect = OSError('download failed')
+        with (
+            patch.object(dedup.ImageHistory, 'find', side_effect=sqlite3.OperationalError),
+            patch.object(bot, 'duplicates_allowed', side_effect=sqlite3.OperationalError),
+            self.assertLogs('image_dedup', level='WARNING') as output,
+        ):
+            self.assertIsNotNone(await self.send(message()))
+        self.assertEqual(self.download.await_count, 1)
+        self.assertEqual(len(output.records), 3)
+        self.assertEqual(len(msgs.load_messages()), 1)
+        self.assertIsNone(msgs.load_messages()[0]['content_hash'])
+
+    async def test_fingerprint_write_failure_still_enqueues(self):
+        with (
+            patch.object(dedup, 'store', side_effect=sqlite3.OperationalError),
+            self.assertLogs('image_dedup', level='WARNING') as output,
+        ):
+            saved = await self.send(message())
+        self.assertIsNone(saved['content_hash'])
+        self.assertIn('"stage": "store_fingerprint"', output.output[-1])
+        self.assertEqual(len(msgs.load_messages()), 1)
+        self.assertIsNotNone(dedup.ImageHistory(self.db).find(unique_id='file-one'))
 
     async def test_image_document_is_checked_and_other_content_unchanged(self):
         await self.send(message())
