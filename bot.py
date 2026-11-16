@@ -1087,9 +1087,8 @@ async def delete_bot(message: types.Message):
 VALID_WEEKDAYS = list(msgs.WEEKDAY_NAMES_RU.keys())
 
 
-async def update_pinned_mode(chat_id, admin_id):
-    pinned = (await bot.get_chat(chat_id)).pinned_message
-    if not pinned or not pinned.text or not pinned.from_user or pinned.from_user.id != bot.id:
+async def update_pinned_mode(chat_id, admin_id, pinned):
+    if not pinned.text or not pinned.from_user or pinned.from_user.id != bot.id:
         return
 
     current = pinned.html_text
@@ -1110,12 +1109,21 @@ async def update_pinned_mode(chat_id, admin_id):
 
 async def confirm_mode_change(message, text):
     chat_id = message.chat.id
+    missing_pin = False
     try:
         async with mode_pin_lock:
-            await update_pinned_mode(chat_id, message.from_user.id)
+            pinned = (await bot.get_chat(chat_id)).pinned_message
+            missing_pin = pinned is None
+            if pinned is not None:
+                await update_pinned_mode(chat_id, message.from_user.id, pinned)
     except TelegramAPIError as exc:
         logger.warning('Ошибка обновления закрепа настроек: chat_id=%s, %s', chat_id, exc)
     await message.answer(text)
+    if missing_pin:
+        await message.answer(
+            'В этой беседе пока нет закреплённого сообщения. '
+            'Чтобы видеть текущий режим, отправьте /help и закрепите ответ бота.'
+        )
 
 
 @dp.message(Command("weekday"))

@@ -24,7 +24,7 @@ class ModePinTests(unittest.IsolatedAsyncioTestCase):
         self.telegram = stack.enter_context(patch.object(bot, 'bot', id=123456))
         self.telegram.get_chat = AsyncMock(return_value=SimpleNamespace(pinned_message=None))
         self.telegram.edit_message_text = AsyncMock()
-        stack.enter_context(patch.object(types.Message, 'answer', new_callable=AsyncMock))
+        self.answer = stack.enter_context(patch.object(types.Message, 'answer', new_callable=AsyncMock))
 
     async def command(self, text):
         message = types.Message(
@@ -72,12 +72,21 @@ class ModePinTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn('Привет', updated)
 
-    async def test_missing_pin_and_pins_from_other_authors_are_skipped(self):
+    async def test_missing_pin_prompts_admin_to_pin_help(self):
         await self.command('/weekday monday')
+        self.telegram.edit_message_text.assert_not_awaited()
+        self.assertEqual(self.answer.await_count, 2)
+        self.answer.assert_awaited_with(
+            'В этой беседе пока нет закреплённого сообщения. '
+            'Чтобы видеть текущий режим, отправьте /help и закрепите ответ бота.'
+        )
+
+    async def test_pins_from_other_authors_are_skipped(self):
         self.pin('Закреп админа', author_id=2, is_bot=False)
         await self.command('/group off')
         self.pin('Закреп именного бота', author_id=424242)
         await self.command('/weekday off')
         self.telegram.edit_message_text.assert_not_awaited()
-        self.assertEqual(self.telegram.get_chat.await_count, 3)
+        self.assertEqual(self.telegram.get_chat.await_count, 2)
+        self.assertEqual(self.answer.await_count, 2)
         self.assertIsNone(adminstat.get_weekday_mode(2))
