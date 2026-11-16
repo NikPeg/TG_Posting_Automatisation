@@ -29,7 +29,7 @@ class HelpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_regular_admin_sees_only_shared_commands_even_with_chief_username(self):
         text = await self.request_help("/help", 2)
-        self.assertEqual(text.splitlines()[0], "Режим: 🖼️ медиа группами ·  день публикации: 📅пятница")
+        self.assertEqual(text.splitlines()[0], "Режим: 🗂️ медиа группами ·  день публикации: 📅пятница")
         self.assertIn("/clear —", text)
         self.assertIn("/messages —", text)
         self.assertIn("/stat —", text)

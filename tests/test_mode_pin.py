@@ -52,20 +52,23 @@ class ModePinTests(unittest.IsolatedAsyncioTestCase):
     async def test_group_edits_current_pin_and_preserves_help_formatting(self):
         adminstat.set_weekday_mode(2, 'friday')
         self.pin('Режим: 🖼️ медиа группами · 📅 день публикации — пятница')
-        await self.command('/group off')
-        self.telegram.get_chat.assert_awaited_once_with(-100123)
-        self.telegram.edit_message_text.assert_awaited_once_with(
-            chat_id=-100123, message_id=42, parse_mode='HTML', reply_markup=None, link_preview_options=None,
-            text='Режим: 🖼️ медиа по отдельности ·  день публикации: 📅пятница\n\n'
-                 '/help — список команд\n/group <b>&lt;on/off&gt;</b>',
-        )
+        for mode, media in [('off', '🖼️ медиа по отдельности'), ('on', '🗂️ медиа группами'),
+                            ('off', '🖼️ медиа по отдельности')]:
+            await self.command(f'/group {mode}')
+            header = f'Режим: {media} ·  день публикации: 📅пятница'
+            self.telegram.get_chat.assert_awaited_with(-100123)
+            self.telegram.edit_message_text.assert_awaited_with(
+                chat_id=-100123, message_id=42, parse_mode='HTML', reply_markup=None, link_preview_options=None,
+                text=f'{header}\n\n/help — список команд\n/group <b>&lt;on/off&gt;</b>',
+            )
+            self.pin(header)
 
     async def test_weekday_replaces_legacy_help_greeting(self):
         self.pin('Привет, готов к работе! :)')
         await self.command('/weekday monday')
         updated = self.telegram.edit_message_text.call_args.kwargs['text']
         self.assertEqual(
-            updated.splitlines()[0], 'Режим: 🖼️ медиа группами ·  день публикации: 📅понедельник'
+            updated.splitlines()[0], 'Режим: 🗂️ медиа группами ·  день публикации: 📅понедельник'
         )
         self.assertNotIn('Привет', updated)
 

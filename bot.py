@@ -391,14 +391,14 @@ async def start_command(message: types.Message):
     )
 
 
-MODE_LINE_PREFIX = 'Режим: 🖼️ '
+MODE_LINE_PREFIX = 'Режим: '
 
 
 def mode_summary(admin_id):
-    group = 'группами' if get_media_group_mode(admin_id) else 'по отдельности'
+    media = '🗂️ медиа группами' if get_media_group_mode(admin_id) else '🖼️ медиа по отдельности'
     weekday = get_weekday_mode(admin_id)
     day = msgs.WEEKDAY_NAMES_RU.get(weekday, weekday) if weekday else 'любой день'
-    return f'{MODE_LINE_PREFIX}медиа {group} ·  день публикации: 📅{day}'
+    return f'{MODE_LINE_PREFIX}{media} ·  день публикации: 📅{day}'
 
 
 @dp.message(Command("help"))
@@ -1097,7 +1097,8 @@ async def update_pinned_mode(chat_id, admin_id):
     summary = escape(mode_summary(admin_id), quote=False)
     if first_line == summary:
         return
-    if first_line.startswith(MODE_LINE_PREFIX) or first_line == 'Привет, готов к работе! :)':
+    mode_prefixes = (f'{MODE_LINE_PREFIX}🗂️ медиа ', f'{MODE_LINE_PREFIX}🖼️ медиа ')
+    if first_line.startswith(mode_prefixes) or first_line == 'Привет, готов к работе! :)':
         updated = summary + newline + rest
     else:
         updated = f'{summary}\n\n{current}'
