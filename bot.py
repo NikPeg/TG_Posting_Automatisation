@@ -4,7 +4,7 @@ import importlib
 import logging
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
-from aiogram.exceptions import TelegramNetworkError, TelegramServerError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramServerError
 from aiogram.filters import Command
 from aiohttp import ClientConnectionError, ClientPayloadError
 from telethon import TelegramClient
@@ -12,6 +12,7 @@ import asyncio
 import ssl
 import certifi
 from dataclasses import dataclass
+from html import escape
 from time import monotonic
 
 import msgs
@@ -38,6 +39,10 @@ from adminstat import (
     duplicates_allowed,
     toggle_duplicates,
     init_admin_settings,
+    get_media_group_mode,
+    get_weekday_mode,
+    set_media_group_mode,
+    set_weekday_mode,
 )
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -69,6 +74,7 @@ class PendingClear:
 
 pending_clears = {}
 image_check_lock = asyncio.Lock()
+mode_pin_lock = asyncio.Lock()
 IMAGE_DOWNLOAD_TIMEOUT = 30
 IMAGE_DOWNLOAD_RETRY_DELAYS = (1, 2, 4)
 IMAGE_DOWNLOAD_TRANSIENT_ERRORS = (
@@ -385,15 +391,24 @@ async def start_command(message: types.Message):
     )
 
 
+MODE_LINE_PREFIX = 'Режим: 🖼️ '
+
+
+def mode_summary(admin_id):
+    group = 'группами' if get_media_group_mode(admin_id) else 'по отдельности'
+    weekday = get_weekday_mode(admin_id)
+    day = msgs.WEEKDAY_NAMES_RU.get(weekday, weekday) if weekday else 'любой день'
+    return f'{MODE_LINE_PREFIX}медиа {group} ·  день публикации: 📅{day}'
+
+
 @dp.message(Command("help"))
 @admin_required
 async def help_command(message: types.Message):
     logger.info("Справка запрошена пользователем ID %s", message.from_user.id)
     ids = get_admin_ids()
     is_chief = bool(ids) and message.from_user.id == ids[0]
-    greeting = (
-        "Привет, готов к работе! :)\n\nВот список моих команд:\n"
-        if is_chief else "Команды для администраторов:\n\n"
+    heading = (
+        "Вот список моих команд:\n" if is_chief else "Команды для администраторов:\n\n"
     )
     common_commands = (
         "/help — список команд\n"
@@ -433,7 +448,10 @@ async def help_command(message: types.Message):
         "/addbot <b>&lt;BOT_TOKEN&gt;</b> <b>&lt;@username&gt;</b> — добавить именного бота для пользователя\n"
         "/deletebot <b>&lt;@username&gt;</b> — удалить именного бота пользователя\n"
     )
-    await message.answer(greeting + common_commands + (chief_commands if is_chief else ""), parse_mode="HTML")
+    summary = escape(mode_summary(message.from_user.id), quote=False)
+    await message.answer(
+        f'{summary}\n\n{heading}{common_commands}' + (chief_commands if is_chief else ''), parse_mode='HTML'
+    )
 
 
 @dp.message(Command("post"))
@@ -1069,6 +1087,36 @@ async def delete_bot(message: types.Message):
 VALID_WEEKDAYS = list(msgs.WEEKDAY_NAMES_RU.keys())
 
 
+async def update_pinned_mode(chat_id, admin_id):
+    pinned = (await bot.get_chat(chat_id)).pinned_message
+    if not pinned or not pinned.text or not pinned.from_user or pinned.from_user.id != bot.id:
+        return
+
+    current = pinned.html_text
+    first_line, newline, rest = current.partition('\n')
+    summary = escape(mode_summary(admin_id), quote=False)
+    if first_line == summary:
+        return
+    if first_line.startswith(MODE_LINE_PREFIX) or first_line == 'Привет, готов к работе! :)':
+        updated = summary + newline + rest
+    else:
+        updated = f'{summary}\n\n{current}'
+    await bot.edit_message_text(
+        chat_id=chat_id, message_id=pinned.message_id, text=updated, parse_mode='HTML',
+        reply_markup=pinned.reply_markup, link_preview_options=pinned.link_preview_options,
+    )
+
+
+async def confirm_mode_change(message, text):
+    chat_id = message.chat.id
+    try:
+        async with mode_pin_lock:
+            await update_pinned_mode(chat_id, message.from_user.id)
+    except TelegramAPIError as exc:
+        logger.warning('Ошибка обновления закрепа настроек: chat_id=%s, %s', chat_id, exc)
+    await message.answer(text)
+
+
 @dp.message(Command("weekday"))
 @admin_required
 async def weekday_command(message: types.Message):
@@ -1076,7 +1124,6 @@ async def weekday_command(message: types.Message):
     username = message.from_user.username
 
     if len(args) == 1:
-        from adminstat import get_weekday_mode
         current = get_weekday_mode(message.from_user.id)
         if current:
             day_ru = msgs.WEEKDAY_NAMES_RU.get(current, current)
@@ -1098,9 +1145,8 @@ async def weekday_command(message: types.Message):
     arg = args[1].lower()
 
     if arg == 'off':
-        from adminstat import set_weekday_mode
         set_weekday_mode(message.from_user.id, None)
-        await message.answer(f"@{username}: новые посты будут выкладываться в любой день")
+        await confirm_mode_change(message, f"@{username}: новые посты будут выкладываться в любой день")
         return
 
     if arg not in VALID_WEEKDAYS:
@@ -1110,10 +1156,10 @@ async def weekday_command(message: types.Message):
         )
         return
 
-    from adminstat import set_weekday_mode
     set_weekday_mode(message.from_user.id, arg)
     day_ru = msgs.WEEKDAY_NAMES_RU.get(arg, arg)
-    await message.answer(
+    await confirm_mode_change(
+        message,
         f"@{username}: новые посты будут выкладываться только в {day_ru}."
     )
 
@@ -1126,11 +1172,13 @@ async def group_command(message: types.Message):
         await message.answer("Используйте: /group on или /group off")
         return
     
-    from adminstat import set_media_group_mode
     mode = args[1].lower() == "on"
     set_media_group_mode(message.from_user.id, mode)
     
-    await message.answer(f"Режим сохранения медиа для @{message.from_user.username} установлен: {'группами' if mode else 'отдельно'}")
+    await confirm_mode_change(
+        message,
+        f"Режим сохранения медиа для @{message.from_user.username} установлен: {'группами' if mode else 'отдельно'}",
+    )
 
 
 

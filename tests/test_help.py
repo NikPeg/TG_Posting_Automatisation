@@ -20,13 +20,16 @@ class HelpTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(bot, "get_admin_ids", return_value=[1, 2] if ids is None else ids), patch.object(
             types.Message, "answer", new_callable=AsyncMock
-        ) as answer:
+        ) as answer, patch.object(bot, "get_media_group_mode", return_value=user_id == 2), patch.object(
+            bot, "get_weekday_mode", return_value="friday"
+        ):
             await bot.dp.feed_update(bot.bot, types.Update(update_id=1, message=message))
         answer.assert_awaited_once()
         return answer.call_args.args[0]
 
     async def test_regular_admin_sees_only_shared_commands_even_with_chief_username(self):
         text = await self.request_help("/help", 2)
+        self.assertEqual(text.splitlines()[0], "Режим: 🖼️ медиа группами ·  день публикации: 📅пятница")
         self.assertIn("/clear —", text)
         self.assertIn("/messages —", text)
         self.assertIn("/stat —", text)
@@ -39,13 +42,14 @@ class HelpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chief_sees_full_help_without_username(self):
         text = await self.request_help("/help", 1, username=None)
-        self.assertTrue(text.startswith("Привет, готов к работе! :)"))
+        self.assertEqual(text.splitlines()[0], "Режим: 🖼️ медиа по отдельности ·  день публикации: 📅пятница")
         for command in ("/clear <", "/duplicates", "/post ", "/settime", "/setinterval",
                         "/resetstattime", "/config", "/clearposted", "/collectstats",
                         "/addadm", "/deladm", "/addbot", "/deletebot", "/stat", "/messages"):
             with self.subTest(command=command):
                 self.assertIn(command, text)
         self.assertNotIn("/groups", text)
+        self.assertNotIn("/modes", text)
         self.assertLess(len(text), 4096)
 
     async def test_non_admin_cannot_read_help(self):
